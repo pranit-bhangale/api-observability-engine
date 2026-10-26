@@ -5,36 +5,38 @@ import io.github.pranit.model.TraceRecord;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * Defines storage operations for adding, retrieving, and managing trace records.
+ */
 public interface ObserveStore {
 
     /**
-     * Appends a new trace record to the in-memory store.
+     * Adds a trace record to the store.
      */
     void add(TraceRecord record);
 
     /**
-     * Returns an unmodifiable list of all buffered traces, newest first.
+     * Returns all stored trace records.
      */
     List<TraceRecord> getTraces();
 
     /**
-     * Returns the most recent N traces.
+     * Returns the most recent trace records up to the specified limit.
      */
     List<TraceRecord> getRecent(int limit);
 
     /**
-     * Finds a trace record by its unique traceId.
+     * Returns the trace record matching the specified trace ID, if present.
      */
     Optional<TraceRecord> getTrace(String traceId);
 
     /**
-     * Clears all traces currently in memory.
+     * Removes all trace records from the store.
      */
     void clear();
 
     /**
-     * Current count of stored traces.
+     * Returns the number of stored trace records.
      */
     int size();
-
 }
