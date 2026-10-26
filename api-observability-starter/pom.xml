@@ -18,6 +18,10 @@
     </properties>
 
     <dependencies>
-        
+        <dependency>
+            <groupId>io.github.pranit</groupId>
+            <artifactId>api-observability-core</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
     </dependencies>
 </project>
