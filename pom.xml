@@ -11,6 +11,9 @@
     <name>api-observability-engine</name>
     <description>API Observability Engine</description>
     <url>https://github.com/pranit-bhangale/api-observability-engine</url>
+    <modules>
+        <module>api-observability-starter</module>
+    </modules>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
