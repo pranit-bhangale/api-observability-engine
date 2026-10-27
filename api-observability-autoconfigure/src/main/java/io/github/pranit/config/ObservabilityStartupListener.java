@@ -1,6 +1,6 @@
 package io.github.pranit.config;
 
-import io.github.pranit.properties.ObserveProperties;
+import io.github.pranit.properties.ServiceProperties;
 import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,9 +14,9 @@ public class ObservabilityStartupListener implements ApplicationListener<Applica
 
     private static final Logger log = LoggerFactory.getLogger("io.github.pranit.Observability");
 
-    private final ObserveProperties properties;
+    private final ServiceProperties.ObserveSettings properties;
 
-    public ObservabilityStartupListener(ObserveProperties properties) {
+    public ObservabilityStartupListener(ServiceProperties.ObserveSettings properties) {
         this.properties = properties;
     }
 

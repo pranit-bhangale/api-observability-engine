@@ -1,6 +1,6 @@
 package io.github.pranit.config;
 
-import io.github.pranit.properties.ObserveProperties;
+import io.github.pranit.properties.ServiceProperties;
 import org.jspecify.annotations.NonNull;
 import org.springframework.core.io.Resource;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
@@ -15,9 +15,9 @@ import java.io.IOException;
  */
 public class ObservabilityWebMvcConfigurer implements WebMvcConfigurer {
 
-    private final ObserveProperties properties;
+    private final ServiceProperties.ObserveSettings properties;
 
-    public ObservabilityWebMvcConfigurer(ObserveProperties properties) {
+    public ObservabilityWebMvcConfigurer(ServiceProperties.ObserveSettings properties) {
         this.properties = properties;
     }
 
