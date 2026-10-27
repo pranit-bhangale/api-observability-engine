@@ -64,6 +64,9 @@ public final class TraceRecord {
      * Number of spans whose status is "ERROR".
      */
     public final int errorCount;
+    public final String error;
+    public final String errorMessage;
+    public final String errorDetail;
 
     /**
      * Number of spans that were dropped because maxSpans limit was reached.
@@ -118,6 +121,12 @@ public final class TraceRecord {
             if (s.isFailed()) errors++;
         }
         this.errorCount = errors;
+        Span failedSpan = (root != null && root.isFailed())
+                ? root
+                : spans.stream().filter(Span::isFailed).findFirst().orElse(null);
+        this.error = failedSpan != null ? failedSpan.error : null;
+        this.errorMessage = failedSpan != null ? failedSpan.errorMessage : null;
+        this.errorDetail = failedSpan != null ? failedSpan.errorDetail : null;
     }
 
     public String getTraceId() {
@@ -156,6 +165,18 @@ public final class TraceRecord {
         return errorCount;
     }
 
+    public String getError() {
+        return error;
+    }
+
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+    public String getErrorDetail() {
+        return errorDetail;
+    }
+
     public int getDropped() {
         return dropped;
     }
@@ -183,6 +204,9 @@ public final class TraceRecord {
         m.put("durationMs", durationMs);
         m.put("spanCount", spanCount);
         m.put("errorCount", errorCount);
+        m.put("error", error);
+        m.put("errorMessage", errorMessage);
+        m.put("errorDetail", errorDetail);
         m.put("dropped", dropped);
         if (inputArgs != null) {
             m.put("inputArgs", inputArgs.stream().map(ArgumentDetail::toMap).toList());

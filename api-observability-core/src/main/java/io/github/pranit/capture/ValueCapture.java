@@ -19,7 +19,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -31,10 +30,10 @@ public final class ValueCapture {
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-    private static final Set<String> DEFAULT_MASK_KEYS = Set.of(
+    private static final String[] DEFAULT_NORMALIZED_MASKS = {
             "password", "passwd", "secret", "token", "authorization",
-            "apikey", "api-key", "cvv", "credentials", "privatekey"
-    );
+            "apikey", "cvv", "credentials", "privatekey"
+    };
 
     private ValueCapture() {
     }
@@ -191,15 +190,18 @@ public final class ValueCapture {
     }
 
     public static boolean isSensitive(String key, Collection<String> extraMaskKeys) {
-        if (key == null) return false;
+        if (key == null || key.isEmpty()) return false;
         String lower = key.toLowerCase().replace("_", "").replace("-", "");
-        for (String mask : DEFAULT_MASK_KEYS) {
-            if (lower.contains(mask.replace("-", ""))) return true;
+        for (String mask : DEFAULT_NORMALIZED_MASKS) {
+            if (lower.contains(mask)) return true;
         }
-        if (extraMaskKeys != null) {
+        if (extraMaskKeys != null && !extraMaskKeys.isEmpty()) {
             for (String mask : extraMaskKeys) {
-                if (lower.contains(mask.toLowerCase().replace("-", ""))) {
-                    return true;
+                if (mask != null && !mask.isEmpty()) {
+                    String normMask = mask.toLowerCase().replace("_", "").replace("-", "");
+                    if (!normMask.isEmpty() && lower.contains(normMask)) {
+                        return true;
+                    }
                 }
             }
         }

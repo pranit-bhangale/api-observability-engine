@@ -23,5 +23,15 @@
             <artifactId>api-observability-core</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
+        <dependency>
+            <groupId>io.github.pranit</groupId>
+            <artifactId>api-observability-autoconfigure</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.pranit</groupId>
+            <artifactId>api-observability-ui</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
     </dependencies>
 </project>

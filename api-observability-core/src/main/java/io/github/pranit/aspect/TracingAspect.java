@@ -23,14 +23,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.ClassUtils;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Spring AOP Aspect that intercepts methods annotated with {@link Trace} or {@link Observe},
  * capturing trace execution spans and publishing completed records.
- * Supports both JDK Dynamic Proxies and CGLIB Proxies.
+ * Supports both JDK Dynamic Proxies and CGLIB Proxies with high-performance metadata caching.
  */
 @Aspect
 public class TracingAspect {
@@ -38,6 +41,20 @@ public class TracingAspect {
     private final ObserveStore observeStore;
     private final TraceFileWriter traceFileWriter;
     private final List<String> maskKeys;
+
+    private final ConcurrentHashMap<Method, MethodMeta> metaCache = new ConcurrentHashMap<>();
+
+    private record MethodMeta(
+            ActionOn category,
+            String name,
+            boolean isTraced,
+            boolean isObserved,
+            boolean captureRequest,
+            boolean captureResponse,
+            int maxLen,
+            boolean hasAnnotation
+    ) {
+    }
 
     public TracingAspect(ObserveStore observeStore, TraceFileWriter traceFileWriter) {
         this(observeStore, traceFileWriter, List.of());
@@ -81,13 +98,15 @@ public class TracingAspect {
             + "&& !within(io.github.pranit.writer..*) "
             + "&& !within(io.github.pranit.security..*) "
             + "&& !within(io.github.pranit.config..*) "
-            + "&& !within(io.github.pranit.controller..*)")
+            + "&& !within(io.github.pranit.controller..*) "
+            + "&& !within(io.github.pranit.discovery..*)")
     public Object around(ProceedingJoinPoint pjp) throws Throwable {
         MethodSignature sig = (MethodSignature) pjp.getSignature();
         Method method = sig.getMethod();
-        Class<?> targetClass = pjp.getTarget() != null
+        Class<?> rawClass = pjp.getTarget() != null
                 ? AopUtils.getTargetClass(pjp.getTarget()) : sig.getDeclaringType();
-        targetClass = ClassUtils.getUserClass(targetClass);
+        final Class<?> targetClass = ClassUtils.getUserClass(rawClass);
+
         // Avoid self-interception on internal observability infrastructure
         String targetName = targetClass.getName();
         if (targetName.startsWith("io.github.pranit.aspect.")
@@ -96,43 +115,66 @@ public class TracingAspect {
                 || targetName.startsWith("io.github.pranit.capture.")
                 || targetName.startsWith("io.github.pranit.security.")
                 || targetName.startsWith("io.github.pranit.config.")
-                || targetName.startsWith("io.github.pranit.controller.")) {
+                || targetName.startsWith("io.github.pranit.controller.")
+                || targetName.startsWith("io.github.pranit.discovery.")) {
             return pjp.proceed();
         }
+
         Method specificMethod = AopUtils.getMostSpecificMethod(method, targetClass);
-        Trace traceAnn = findAnnotation(method, specificMethod, targetClass, Trace.class);
-        Observe observeAnn = findAnnotation(method, specificMethod, targetClass, Observe.class);
+        MethodMeta meta = metaCache.computeIfAbsent(specificMethod, m -> resolveMeta(method, m, targetClass));
         TraceContext currentCtx = TraceContext.current();
+
         // If neither annotation is present and no active deep trace exists, pass through
-        if (traceAnn == null && observeAnn == null) {
+        if (!meta.hasAnnotation) {
             if (currentCtx == null || !currentCtx.deep) return pjp.proceed();
         }
+
         // Handle root span
         if (currentCtx == null) {
-            return handleRootSpan(pjp, sig, method, specificMethod, targetClass, traceAnn, observeAnn);
+            return handleRootSpan(pjp, sig, specificMethod, targetClass, meta);
         } else {
             // Child spans are only recorded if deep tracing is enabled.
             if (!currentCtx.deep) return pjp.proceed();
-            return handleChildSpan(pjp, sig, method, specificMethod, targetClass, traceAnn, observeAnn, currentCtx);
+            return handleChildSpan(pjp, sig, specificMethod, targetClass, meta, currentCtx);
         }
     }
 
-    private Object handleRootSpan(
-            ProceedingJoinPoint pjp, MethodSignature sig, Method method, Method specificMethod,
-            Class<?> targetClass, Trace traceAnn, Observe observeAnn) throws Throwable {
+    private MethodMeta resolveMeta(Method method, Method specificMethod, Class<?> targetClass) {
+        Trace traceAnn = findAnnotation(method, specificMethod, targetClass, Trace.class);
+        Observe observeAnn = findAnnotation(method, specificMethod, targetClass, Observe.class);
+
         ActionOn category = resolveCategory(traceAnn, observeAnn, targetClass);
         String name = resolveName(traceAnn, observeAnn, targetClass, specificMethod);
-        boolean trace = traceAnn != null;
-        boolean observe = observeAnn != null;
-        boolean captureArgs = isCaptureRequest(observeAnn, traceAnn);
-        boolean captureReturn = isCaptureResponse(observeAnn, traceAnn);
+        boolean isTraced = traceAnn != null;
+        boolean isObserved = observeAnn != null;
+        boolean captureReq = isCaptureRequest(observeAnn, traceAnn);
+        boolean captureResp = isCaptureResponse(observeAnn, traceAnn);
+
         int maxLen = 500;
         if (observeAnn != null) maxLen = observeAnn.maxLen();
         else if (traceAnn != null) maxLen = traceAnn.maxLen();
+
+        boolean hasAnnotation = (traceAnn != null || observeAnn != null);
+        return new MethodMeta(category, name, isTraced, isObserved, captureReq, captureResp, maxLen, hasAnnotation);
+    }
+
+    private Object handleRootSpan(
+            ProceedingJoinPoint pjp, MethodSignature sig, Method specificMethod,
+            Class<?> targetClass, MethodMeta meta) throws Throwable {
+
+        ActionOn category = meta.category();
+        String name = meta.name();
+        boolean trace = meta.isTraced();
+        boolean observe = meta.isObserved();
+        boolean captureArgs = meta.captureRequest();
+        boolean captureReturn = meta.captureResponse();
+        int maxLen = meta.maxLen();
+
         TraceContext ctx = new TraceContext(trace, observe, category.isDeep(), captureArgs, captureReturn, maxLen, 2000);
         TraceContext.bind(ctx);
         Span root = ctx.span(category, name, targetClass.getName(), specificMethod.getName());
         String[] paramNames = sig.getParameterNames();
+
         if (captureArgs) {
             root.args = ValueCapture.captureArgs(specificMethod, paramNames, pjp.getArgs(), maxLen, maskKeys);
             root.inputArgs = ValueCapture.captureInputDetails(specificMethod, paramNames, pjp.getArgs(), maxLen, maskKeys);
@@ -140,6 +182,7 @@ public class TracingAspect {
             root.args = null;
             root.inputArgs = null;
         }
+
         Object result;
         try {
             result = pjp.proceed();
@@ -154,6 +197,8 @@ public class TracingAspect {
         } catch (Throwable t) {
             root.status = "ERROR";
             root.error = t.getClass().getSimpleName() + (t.getMessage() != null ? ": " + t.getMessage() : "");
+            root.errorMessage = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            root.errorDetail = formatErrorDetail(t);
             throw t;
         } finally {
             ctx.close(root);
@@ -166,27 +211,30 @@ public class TracingAspect {
 
     private Object handleChildSpan(
             ProceedingJoinPoint pjp, MethodSignature sig,
-            Method method, Method specificMethod, Class<?> targetClass,
-            Trace traceAnn, Observe observeAnn, TraceContext ctx) throws Throwable {
+            Method specificMethod, Class<?> targetClass,
+            MethodMeta meta, TraceContext ctx) throws Throwable {
+
         if (ctx.full()) {
             ctx.markDropped();
             return pjp.proceed();
         }
-        ActionOn category = resolveCategory(traceAnn, observeAnn, targetClass);
-        String name = resolveName(traceAnn, observeAnn, targetClass, specificMethod);
-        Trace childTrace = findAnnotation(method, specificMethod, targetClass, Trace.class);
-        Observe childObserve = findAnnotation(method, specificMethod, targetClass, Observe.class);
+
+        ActionOn category = meta.category();
+        String name = meta.name();
+
         boolean childCaptureArgs;
         boolean childCaptureReturn;
-        if (childObserve != null || childTrace != null) {
-            childCaptureArgs = isCaptureRequest(childObserve, childTrace);
-            childCaptureReturn = isCaptureResponse(childObserve, childTrace);
+        if (meta.hasAnnotation()) {
+            childCaptureArgs = meta.captureRequest();
+            childCaptureReturn = meta.captureResponse();
         } else {
             childCaptureArgs = ctx.captureArgs;
             childCaptureReturn = ctx.captureReturn;
         }
+
         Span span = ctx.span(category, name, targetClass.getName(), specificMethod.getName());
         String[] paramNames = sig.getParameterNames();
+
         if (childCaptureArgs) {
             span.args = ValueCapture.captureArgs(specificMethod, paramNames, pjp.getArgs(), ctx.maxLen, maskKeys);
             span.inputArgs = ValueCapture.captureInputDetails(specificMethod, paramNames, pjp.getArgs(), ctx.maxLen, maskKeys);
@@ -194,6 +242,7 @@ public class TracingAspect {
             span.args = null;
             span.inputArgs = null;
         }
+
         Object result;
         try {
             result = pjp.proceed();
@@ -208,10 +257,19 @@ public class TracingAspect {
         } catch (Throwable t) {
             span.status = "ERROR";
             span.error = t.getClass().getSimpleName() + (t.getMessage() != null ? ": " + t.getMessage() : "");
+            span.errorMessage = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            span.errorDetail = formatErrorDetail(t);
             throw t;
         } finally {
             ctx.close(span);
         }
+    }
+
+    private static String formatErrorDetail(Throwable t) {
+        if (t == null) return null;
+        StringWriter sw = new StringWriter();
+        t.printStackTrace(new PrintWriter(sw));
+        return sw.toString();
     }
 
     private boolean isCaptureRequest(Observe observeAnn, Trace traceAnn) {

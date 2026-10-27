@@ -9,6 +9,7 @@ import io.github.pranit.security.SecurityConfiguration;
 import io.github.pranit.store.InMemoryObserveStore;
 import io.github.pranit.store.ObserveStore;
 import io.github.pranit.writer.TraceFileWriter;
+import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -20,10 +21,14 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Condition;
+import org.springframework.context.annotation.ConditionContext;
+import org.springframework.context.annotation.Conditional;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
+import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -97,9 +102,39 @@ public class ObservabilityConfiguration {
             havingValue = "true"
     )
     @ConditionalOnMissingBean
-    public AuthController authController(ServiceProperties.ObserveSettings properties) {
-        String title = (properties.observe() != null) ? properties.observe().title() : "API Observability";
-        return new AuthController(title, properties.getPath());
+    public AuthController authController(ServiceProperties service) {
+        var observe = (service.observing() != null) ? service.observing().observe() : null;
+        String title = (observe != null) ? observe.title() : "API Observability";
+        String endpoint = (service.observing() != null) ? service.observing().getPath() : "/obs";
+        String role = (service.observe() != null && service.observe().role() != null)
+                ? service.observe().role() : "ADMIN,DEVELOPER";
+        return new AuthController(title, endpoint, role);
+    }
+
+    @Bean
+    @ConditionalOnWebApplication
+    @ConditionalOnProperty(
+            prefix = "service.observing.observe",
+            name = "enabled",
+            havingValue = "true"
+    )
+    @Conditional(OnUiResourceCondition.class)
+    @ConditionalOnMissingBean
+    public ObservabilityWebMvcConfigurer observabilityWebMvcConfigurer(ServiceProperties.ObserveSettings properties) {
+        return new ObservabilityWebMvcConfigurer(properties);
+    }
+
+    /**
+     * Condition matching when the UI static bundle (from api-observability-ui) is present on classpath.
+     * When api-observability-ui is excluded, this condition evaluates to false, enabling zero-footprint Headless Mode.
+     */
+    static class OnUiResourceCondition implements Condition {
+        @Override
+        public boolean matches(ConditionContext context, @NonNull AnnotatedTypeMetadata metadata) {
+            var loader = context.getResourceLoader();
+            return loader.getResource("classpath:/static/obs/index.html").exists()
+                    || loader.getResource("classpath:/META-INF/resources/obs/index.html").exists();
+        }
     }
 
     @Bean
@@ -162,8 +197,9 @@ public class ObservabilityConfiguration {
                 && properties.password() != null
                 && !properties.password().isBlank())
                 ? properties.password() : "admin";
+        String[] roles = (properties != null) ? properties.roles() : new String[]{"ADMIN", "DEVELOPER"};
         validateCredentials(username, password, environment);
-        SecurityConfiguration security = new SecurityConfiguration(username, password, path.getPath());
+        SecurityConfiguration security = new SecurityConfiguration(username, password, roles, path.getPath(), null);
         return security.buildFilterChain(http);
     }
 
@@ -208,9 +244,10 @@ public class ObservabilityConfiguration {
                 ? properties.password() : "admin";
         validateCredentials(username, password, environment);
         var encoder = new BCryptPasswordEncoder();
+        String[] roles = (properties != null) ? properties.roles() : new String[]{"ADMIN", "DEVELOPER"};
         var user = User.withUsername(username)
                 .password(encoder.encode(password))
-                .roles(properties != null ? properties.normalizedRole() : "OBSERVABILITY_ADMIN")
+                .roles(roles)
                 .build();
         return new InMemoryUserDetailsManager(user);
     }

@@ -3,6 +3,7 @@ package io.github.pranit.properties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
+import java.util.Arrays;
 import java.util.List;
 
 @ConfigurationProperties(prefix = "service")
@@ -35,14 +36,26 @@ public record ServiceProperties(
     }
 
     public record ObserveSecuritySettings(
-            @DefaultValue("OBSERVABILITY_ADMIN") String role,
+            @DefaultValue("ADMIN,DEVELOPER") String role,
             @DefaultValue("") String username,
             @DefaultValue("") String password
     ) {
         public String normalizedRole() {
             String r = (role == null || role.isBlank())
-                    ? "OBSERVABILITY_ADMIN" : role.trim();
+                    ? "ADMIN" : role.trim();
+            if (r.contains(",")) {
+                r = r.split(",")[0].trim();
+            }
             return r.startsWith("ROLE_") ? r.substring(5) : r;
+        }
+
+        public String[] roles() {
+            String r = (role == null || role.isBlank()) ? "ADMIN,DEVELOPER" : role.trim();
+            return Arrays.stream(r.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(s -> s.startsWith("ROLE_") ? s.substring(5) : s)
+                    .toArray(String[]::new);
         }
     }
 

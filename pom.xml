@@ -12,9 +12,11 @@
     <description>API Observability Engine</description>
     <url>https://github.com/pranit-bhangale/api-observability-engine</url>
     <modules>
-        <module>api-observability-starter</module>
         <module>api-observability-core</module>
+        <module>api-observability-ui</module>
         <module>api-observability-autoconfigure</module>
+        <module>api-observability-starter</module>
+        <module>api-observability-example</module>
     </modules>
 
     <properties>
@@ -50,31 +52,22 @@
                         <parameters>true</parameters>
                     </configuration>
                 </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-jar-plugin</artifactId>
-                    <version>3.4.2</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.5.4</version>
-                    <configuration>
-                        <argLine>-XX:+EnableDynamicAgentLoading -Djdk.net.URLClassPath.disableClassPathURLCheck=true
-                        </argLine>
-                    </configuration>
-                </plugin>
             </plugins>
         </pluginManagement>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-            </plugin>
-        </plugins>
     </build>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Pranit Bhangale</name>
+            <url>https://github.com/pranit-bhangale</url>
+        </developer>
+    </developers>
+
 </project>

@@ -111,6 +111,8 @@ public final class Span {
      * Error description if the method threw an exception, or {@code null }
      */
     public String error;
+    public String errorMessage;
+    public String errorDetail;
 
     /**
      * Creates a new span with the given metadata.
@@ -317,6 +319,14 @@ public final class Span {
         return error;
     }
 
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+    public String getErrorDetail() {
+        return errorDetail;
+    }
+
     public List<ArgumentDetail> getInputArgs() {
         return inputArgs != null ? inputArgs : List.of();
     }
@@ -361,6 +371,8 @@ public final class Span {
             m.put("result", toJsonValue(result));
         }
         m.put("error", error);
+        m.put("errorMessage", errorMessage);
+        m.put("errorDetail", errorDetail);
         return m;
     }
 }

@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 /**
- * Daily rotating JSON line log file writer for traces with automatic retention cleanup.
+ * High-performance daily rotating JSON log file writer for traces with automatic retention cleanup.
  */
 public class TraceFileWriter implements AutoCloseable {
 
@@ -38,6 +38,7 @@ public class TraceFileWriter implements AutoCloseable {
     private final ObjectMapper mapper;
     private final ExecutorService executor;
     private final AtomicReference<LocalDate> lastCleanupDate;
+    private volatile boolean directoryEnsured;
 
     public TraceFileWriter(String directory, String filePrefix, boolean async, int retentionDays) {
         this.directory = directory != null ? directory : "logs/trace";
@@ -56,9 +57,11 @@ public class TraceFileWriter implements AutoCloseable {
     }
 
     private void ensureDirectory() {
+        if (directoryEnsured) return;
         try {
             Path dir = Paths.get(directory);
             if (!Files.exists(dir)) Files.createDirectories(dir);
+            directoryEnsured = true;
         } catch (IOException ignored) {
         }
     }
@@ -127,7 +130,6 @@ public class TraceFileWriter implements AutoCloseable {
             executor.submit(() -> writeRecord(record));
         else
             writeRecord(record);
-
     }
 
     private void writeRecord(TraceRecord record) {
@@ -156,39 +158,38 @@ public class TraceFileWriter implements AutoCloseable {
                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
                 return;
             }
+
             try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
                 long length = raf.length();
-                raf.seek(0);
-                int firstChar = -1;
-                while (raf.getFilePointer() < length) {
-                    int b = raf.read();
-                    if (!Character.isWhitespace(b)) {
-                        firstChar = b;
-                        break;
-                    }
-                }
-                if (firstChar != '[') {
-                    raf.close();
-                    migrateLegacyFile(jsonFilePath, jsonRecord);
+                // Fast-check start of file for JSON array opener
+                if (length < 2) {
+                    Files.writeString(jsonFilePath, "[\n  " + jsonRecord + "\n]\n", StandardCharsets.UTF_8);
                     return;
                 }
-                long pos = length - 1;
-                while (pos >= 0) {
-                    raf.seek(pos);
-                    int b = raf.read();
-                    if (b == ']') {
+
+                // Read tail buffer (up to 128 bytes) in a single read to find ']'
+                int tailSize = (int) Math.min(length, 128L);
+                long tailStart = length - tailSize;
+                raf.seek(tailStart);
+                byte[] tailBuf = new byte[tailSize];
+                raf.readFully(tailBuf);
+
+                int bracketOffset = -1;
+                for (int i = tailSize - 1; i >= 0; i--) {
+                    if (tailBuf[i] == ']') {
+                        bracketOffset = i;
                         break;
                     }
-                    pos--;
                 }
-                if (pos >= 0) {
-                    raf.seek(pos);
+
+                if (bracketOffset >= 0) {
+                    raf.seek(tailStart + bracketOffset);
                     String appendData = ",\n  " + jsonRecord + "\n]\n";
                     raf.write(appendData.getBytes(StandardCharsets.UTF_8));
                 } else {
-                    raf.seek(length);
-                    String appendData = "\n  ," + jsonRecord + "\n]\n";
-                    raf.write(appendData.getBytes(StandardCharsets.UTF_8));
+                    // Fallback to legacy migration if file doesn't end with JSON array bracket
+                    raf.close();
+                    migrateLegacyFile(jsonFilePath, jsonRecord);
                 }
             }
         } catch (Exception ignored) {

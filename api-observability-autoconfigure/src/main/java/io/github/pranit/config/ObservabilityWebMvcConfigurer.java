@@ -12,6 +12,7 @@ import java.io.IOException;
 
 /**
  * Web MVC configuration for the observability dashboard.
+ * Serves dashboard resources provided by api-observability-ui.
  */
 public class ObservabilityWebMvcConfigurer implements WebMvcConfigurer {
 
@@ -36,7 +37,7 @@ public class ObservabilityWebMvcConfigurer implements WebMvcConfigurer {
         String path = properties.getPath();
         String pattern = (path != null && !path.isEmpty()) ? path : "/obs";
         registry.addResourceHandler(pattern + "/**")
-                .addResourceLocations("classpath:/static/obs/")
+                .addResourceLocations("classpath:/static/obs/", "classpath:/META-INF/resources/obs/")
                 .resourceChain(true)
                 .addResolver(new PathResourceResolver() {
                     @Override
