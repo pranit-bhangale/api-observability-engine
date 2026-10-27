@@ -2,84 +2,83 @@ package io.github.pranit.store;
 
 import io.github.pranit.model.TraceRecord;
 
-import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Thread-safe in-memory store for recent traces, consumed by the dashboard UI and REST API.
+ * Singleton in-memory store.
+ * Optionally call init(maxTraces) once at startup; otherwise getInstance() uses 500.
  */
-public class InMemoryObserveStore implements ObserveStore {
+public final class InMemoryObserveStore implements ObserveStore {
 
-    private final int maxTraces;
-    private final Deque<TraceRecord> buffer = new ConcurrentLinkedDeque<>();
-    private final AtomicInteger size = new AtomicInteger(0);
+    private static final int DEFAULT_MAX_TRACES = 500;
+    private static volatile InMemoryObserveStore instance;
 
-    public InMemoryObserveStore() {
-        this(500);
+    private final TraceWriter writer;
+    private final TraceReader reader;
+
+    private InMemoryObserveStore(int maxTraces) {
+        TraceBuffer buffer = new TraceBuffer(maxTraces);
+        this.writer = new InMemoryTraceWriter(buffer);
+        this.reader = new InMemoryTraceReader(buffer);
     }
 
-    public InMemoryObserveStore(int maxTraces) {
-        this.maxTraces = Math.max(1, maxTraces);
+    public static InMemoryObserveStore init(int maxTraces) {
+        if (instance == null) {
+            synchronized (InMemoryObserveStore.class) {
+                if (instance == null) {
+                    instance = new InMemoryObserveStore(maxTraces);
+                }
+            }
+        }
+        return instance;
     }
 
-    /**
-     * Appends a new trace record to the in-memory store.
-     */
+    public static InMemoryObserveStore getInstance() {
+        InMemoryObserveStore s = instance;
+        return s != null ? s : init(DEFAULT_MAX_TRACES);
+    }
+
+    public TraceWriter writer() {
+        return writer;
+    }
+
+    public TraceReader reader() {
+        return reader;
+    }
+
     @Override
     public void add(TraceRecord record) {
-        if (record == null) return;
-        buffer.addFirst(record);
-        if (size.incrementAndGet() > maxTraces) {
-            if (buffer.pollLast() != null) size.decrementAndGet();
-        }
+        writer.add(record);
     }
 
-    /**
-     * Returns an unmodifiable list of all buffered traces, newest first.
-     */
     @Override
-    public List<TraceRecord> getTraces() {
-        return List.copyOf(buffer);
+    public boolean delete(String traceId) {
+        return writer.delete(traceId);
     }
 
-    /**
-     * Returns the most recent N traces.
-     */
-    @Override
-    public List<TraceRecord> getRecent(int limit) {
-        return buffer.stream()
-                .limit(Math.max(0, limit))
-                .toList();
-    }
-
-    /**
-     * Finds a trace record by its unique traceId.
-     */
-    @Override
-    public Optional<TraceRecord> getTrace(String traceId) {
-        if (traceId == null || traceId.isBlank()) return Optional.empty();
-        return buffer.stream()
-                .filter(t -> traceId.equalsIgnoreCase(t.getTraceId()))
-                .findFirst();
-    }
-
-    /**
-     * Clears all traces currently in memory.
-     */
     @Override
     public void clear() {
-        buffer.clear();
-        size.set(0);
+        writer.clear();
     }
 
-    /**
-     * Current count of stored traces.
-     */
+    @Override
+    public List<TraceRecord> getTraces() {
+        return reader.getTraces();
+    }
+
+    @Override
+    public List<TraceRecord> getRecent(int limit) {
+        return reader.getRecent(limit);
+    }
+
+    @Override
+    public Optional<TraceRecord> getTrace(String id) {
+        return reader.getTrace(id);
+    }
+
     @Override
     public int size() {
-        return Math.max(0, size.get());
+        return reader.size();
     }
 }
