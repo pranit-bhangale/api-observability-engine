@@ -23,19 +23,8 @@ public class ObservabilityWebMvcConfigurer implements WebMvcConfigurer {
     }
 
     @Override
-    public void addViewControllers(@NonNull ViewControllerRegistry registry) {
-        String path = properties.getPath();
-        if (path != null && !path.isEmpty() && !"/".equals(path)) {
-            registry.addRedirectViewController(path, path + "/");
-        }
-        registry.addViewController(path + "/").setViewName("forward:" + path + "/index.html");
-        registry.addViewController(path + "/login").setViewName("forward:" + path + "/index.html");
-    }
-
-    @Override
     public void addResourceHandlers(@NonNull ResourceHandlerRegistry registry) {
-        String path = properties.getPath();
-        String pattern = (path != null && !path.isEmpty()) ? path : "/obs";
+        String pattern = getPath();
         registry.addResourceHandler(pattern + "/**")
                 .addResourceLocations("classpath:/static/obs/", "classpath:/META-INF/resources/obs/")
                 .resourceChain(true)
@@ -51,5 +40,18 @@ public class ObservabilityWebMvcConfigurer implements WebMvcConfigurer {
                         return null;
                     }
                 });
+    }
+
+    @Override
+    public void addViewControllers(@NonNull ViewControllerRegistry registry) {
+        String path = getPath();
+        if (!"/".equals(path)) registry.addRedirectViewController(path, path + "/");
+        registry.addViewController(path + "/").setViewName("forward:" + path + "/index.html");
+        registry.addViewController(path + "/login").setViewName("forward:" + path + "/index.html");
+    }
+
+    private String getPath() {
+        return (properties != null && properties.getPath() != null
+                && !properties.getPath().isBlank()) ? properties.getPath() : "/obs";
     }
 }

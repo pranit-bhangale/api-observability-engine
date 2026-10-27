@@ -1,57 +1,81 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ObservedEndpoint, SessionInfo, TraceRecord, ViewTab } from './types';
-import { clearTraces, fetchEndpoints, fetchSession, fetchTraces } from './api';
+import { clearTraces, fetchEndpoints, fetchSession, fetchTraces, logout } from './api';
 import { HeaderNav } from './components/HeaderNav';
 import { DashboardView } from './components/DashboardView';
 import { GraphView } from './components/GraphView';
+import { AnalyticsView } from './components/AnalyticsView';
 import { EndpointRunner } from './components/EndpointRunner';
 import { JsonUploadView } from './components/JsonUploadView';
+import { LoginView } from './components/LoginView';
 
 export function App() {
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [activeTab, setActiveTab] = useState<ViewTab>('dashboard');
   const [traces, setTraces] = useState<TraceRecord[]>([]);
+  const [customTraces, setCustomTraces] = useState<TraceRecord[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<TraceRecord | null>(null);
   const [endpoints, setEndpoints] = useState<ObservedEndpoint[]>([]);
   const [selectedEndpoint, setSelectedEndpoint] = useState<ObservedEndpoint | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [isCheckingSession, setIsCheckingSession] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
 
-  // Load live data from the backend
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+  };
+
+  // Load session & live data from backend
   const loadData = useCallback(async () => {
-    const [fetchedTraces, fetchedEndpoints, fetchedSession] = await Promise.all([
-      fetchTraces(),
-      fetchEndpoints(),
-      fetchSession(),
-    ]);
-
-    setTraces(fetchedTraces);
-    setSelectedTrace((prev) => {
-      if (!prev) return fetchedTraces.length > 0 ? fetchedTraces[0] : null;
-      const match = fetchedTraces.find((t) => t.traceId === prev.traceId);
-      return match || (fetchedTraces.length > 0 ? fetchedTraces[0] : null);
-    });
-
-    setEndpoints(fetchedEndpoints);
-
-    if (fetchedSession) {
+    try {
+      const fetchedSession = await fetchSession();
       setSession(fetchedSession);
-    }
+      setIsCheckingSession(false);
 
-    return fetchedTraces;
-  }, []);
+      if (fetchedSession && fetchedSession.authenticated) {
+        const [fetchedTraces, fetchedEndpoints] = await Promise.all([
+          fetchTraces(),
+          fetchEndpoints(),
+        ]);
+
+        // Merge custom imported traces with fetched server traces
+        const merged = [
+          ...customTraces,
+          ...fetchedTraces.filter((ft) => !customTraces.some((ct) => ct.traceId === ft.traceId)),
+        ];
+        setTraces(merged);
+
+        setSelectedTrace((prev) => {
+          if (!prev) return customTraces.length > 0 ? customTraces[0] : (fetchedTraces.length > 0 ? fetchedTraces[0] : null);
+          // Check if previously selected trace is in custom traces
+          const customMatch = customTraces.find((t) => t.traceId === prev.traceId);
+          if (customMatch) return customMatch;
+          // Check if previously selected trace is in fetched traces
+          const fetchedMatch = fetchedTraces.find((t) => t.traceId === prev.traceId);
+          return fetchedMatch || prev;
+        });
+
+        setEndpoints(fetchedEndpoints);
+        return fetchedTraces;
+      }
+    } catch {
+      setIsCheckingSession(false);
+    }
+    return [];
+  }, [customTraces]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  // Auto-refresh timer
+  // Auto-refresh timer (only if authenticated)
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || !session?.authenticated) return;
     const interval = setInterval(() => {
       loadData();
     }, 3000);
     return () => clearInterval(interval);
-  }, [autoRefresh, loadData]);
+  }, [autoRefresh, session?.authenticated, loadData]);
 
   // Actions
   const handleSelectTrace = (trace: TraceRecord) => {
@@ -66,8 +90,16 @@ export function App() {
     setActiveTab('endpoint');
   };
 
-  const handleVisualizeTrace = (trace: TraceRecord) => {
-    setTraces((prev) => [trace, ...prev.filter((t) => t.traceId !== trace.traceId)]);
+  const handleVisualizeTrace = (trace: TraceRecord, allTraces?: TraceRecord[]) => {
+    const tracesToAdd = allTraces && allTraces.length > 0 ? allTraces : [trace];
+    setCustomTraces((prev) => {
+      const ids = new Set(tracesToAdd.map((t) => t.traceId));
+      return [...tracesToAdd, ...prev.filter((t) => !ids.has(t.traceId))];
+    });
+    setTraces((prev) => {
+      const ids = new Set(tracesToAdd.map((t) => t.traceId));
+      return [...tracesToAdd, ...prev.filter((t) => !ids.has(t.traceId))];
+    });
     setSelectedTrace(trace);
     setActiveTab('trace');
   };
@@ -75,13 +107,54 @@ export function App() {
   const handleClearTraces = async () => {
     if (window.confirm('Are you sure you want to clear all in-memory traces?')) {
       await clearTraces();
+      setCustomTraces([]);
       await loadData();
       setSelectedTrace(null);
     }
   };
 
+  const handleLogout = async () => {
+    await logout();
+    setSession({
+      authenticated: false,
+      title: 'API Observability',
+      username: '',
+      role: 'ADMIN',
+    });
+    setTraces([]);
+    setCustomTraces([]);
+    setEndpoints([]);
+    setSelectedTrace(null);
+  };
+
+  // Loading spinner during initial session check
+  if (isCheckingSession) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-[#F1F3F5]">
+        <div className="flex flex-col items-center gap-2.5">
+          <div className="w-8 h-8 border-2 border-[#CBD5E1] border-t-[#2563EB] rounded-full animate-spin" />
+          <span className="text-xs font-bold text-[#263238]">Loading Observability Session...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // If not authenticated -> show Login Screen
+  if (!session || !session.authenticated) {
+    return (
+      <div className="min-h-screen w-full bg-[#F1F3F5]">
+        <LoginView
+          onLoginSuccess={loadData}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+        />
+      </div>
+    );
+  }
+
+  // Authenticated Dashboard
   return (
-    <div className="min-h-screen bg-[#07080d] text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
+    <div className="min-h-screen bg-[#F1F3F5] flex flex-col font-sans transition-colors duration-150">
       {/* Top Floating Pill Navigation */}
       <HeaderNav
         activeTab={activeTab}
@@ -90,7 +163,10 @@ export function App() {
         autoRefresh={autoRefresh}
         onToggleAutoRefresh={() => setAutoRefresh((prev) => !prev)}
         onClearTraces={handleClearTraces}
+        onLogout={handleLogout}
         traceCount={traces.length}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
       {/* Main View Router */}
@@ -101,6 +177,8 @@ export function App() {
             endpoints={endpoints}
             onSelectTrace={handleSelectTrace}
             onOpenRunner={handleOpenRunner}
+            onNavigateToGraph={() => setActiveTab('trace')}
+            onNavigateToJsonUpload={() => setActiveTab('jsonUpload')}
           />
         )}
 
@@ -110,6 +188,13 @@ export function App() {
             traces={traces}
             onSelectTrace={setSelectedTrace}
             onBackToDashboard={() => setActiveTab('dashboard')}
+          />
+        )}
+
+        {activeTab === 'analytics' && (
+          <AnalyticsView
+            traces={traces}
+            onSelectTrace={handleSelectTrace}
           />
         )}
 

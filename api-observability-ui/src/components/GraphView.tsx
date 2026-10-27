@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import type { GraphLayout, GraphMode, Span, TraceRecord } from '../types';
+import type { GraphMode, Span, TraceRecord } from '../types';
+import { calculateGraphLayout } from '../utils/graphLayout';
 
 interface GraphViewProps {
   trace: TraceRecord | null;
@@ -8,36 +9,155 @@ interface GraphViewProps {
   onBackToDashboard: () => void;
 }
 
+// Line-Numbered Code Viewer for the White Theme with NO overlapping Copy button
+interface CodeViewerProps {
+  jsonString: string;
+  title?: string;
+  badge?: string;
+}
+
+const CodeViewer: React.FC<CodeViewerProps> = ({ jsonString, title, badge }) => {
+  const [copied, setCopied] = useState(false);
+  const lines = jsonString.split('\n');
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(jsonString);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex flex-col w-full h-full rounded-xl border border-[#CBD5E1] bg-white overflow-hidden shadow-xs">
+      {/* Dedicated Top Toolbar with Header & Copy Button (Zero Overlap on Code Text) */}
+      <div className="flex items-center justify-between px-3.5 py-2 border-b border-[#CBD5E1] bg-[#F1F5F9] shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-mono font-bold text-[#263238]">{title || 'JSON Schema'}</span>
+          <span className="px-1.5 py-0.2 rounded text-[10px] font-mono text-[#64748B] bg-white border border-[#CBD5E1]">
+            {lines.length} lines
+          </span>
+          {badge && (
+            <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE]">
+              {badge}
+            </span>
+          )}
+        </div>
+
+        <button
+          onClick={handleCopy}
+          className="btn-run px-3 py-1 rounded-md text-[11px] font-bold text-white shadow-xs flex items-center gap-1 cursor-pointer transition-all"
+          title="Copy code to clipboard"
+        >
+          <span>{copied ? '✓ Copied' : 'Copy'}</span>
+        </button>
+      </div>
+
+      {/* Code Container with Line Numbers in Left Gutter */}
+      <div className="relative flex-1 flex overflow-auto font-mono text-xs leading-relaxed bg-[#F8FAFC]">
+        {/* Line Numbers Gutter */}
+        <div
+          className="flex flex-col select-none border-r border-[#CBD5E1] bg-[#F1F5F9] px-2.5 py-3 text-right text-[#94A3B8] font-mono text-[11px] min-w-[42px] shrink-0"
+          aria-hidden="true"
+        >
+          {lines.map((_, i) => (
+            <div key={i} className="leading-5">
+              {i + 1}
+            </div>
+          ))}
+        </div>
+
+        {/* Code Pre Area: Cleanly starts at Line 1 without any overlapping element */}
+        <div className="relative flex-1 overflow-auto p-3 text-[#1E293B]">
+          <pre className="font-mono text-xs leading-5 whitespace-pre selection:bg-[#BFDBFE]">
+            <code>{jsonString}</code>
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const GraphView: React.FC<GraphViewProps> = ({
   trace,
   traces,
   onSelectTrace,
   onBackToDashboard,
 }) => {
-  const [layout, setLayout] = useState<GraphLayout>('horizontal');
+  const [layoutMode, setLayoutMode] = useState<'horizontal' | 'vertical' | 'pipeline'>('horizontal');
   const [mode, setMode] = useState<GraphMode>('graph');
   const [selectedSpan, setSelectedSpan] = useState<Span | null>(null);
   const [highlightBottleneck, setHighlightBottleneck] = useState<boolean>(true);
   const [copiedId, setCopiedId] = useState<boolean>(false);
-  const [copiedStack, setCopiedStack] = useState<boolean>(false);
+
+  // Inspector Drawer State & Tabs
+  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(true);
+  const [inspectorTab, setInspectorTab] = useState<'overview' | 'io' | 'attributes' | 'rawJson'>('overview');
+
+  // Node Hover State
+  const [hoveredNode, setHoveredNode] = useState<{
+    node: any;
+    span: Span;
+  } | null>(null);
+  const hoverTimeoutRef = useRef<number | null>(null);
+
+  const handleNodeMouseEnter = (node: any, span: Span) => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    setHoveredNode({ node, span });
+  };
+
+  const handleNodeMouseLeave = () => {
+    hoverTimeoutRef.current = window.setTimeout(() => {
+      setHoveredNode(null);
+    }, 250);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    setHoveredNode(null);
+  };
 
   // Zoom & Pan state
   const [scale, setScale] = useState<number>(0.75);
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 60, y: 140 });
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 50, y: 100 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Track current traceId so we ONLY reset selectedSpan when switching to a DIFFERENT trace
+  const currentTraceIdRef = useRef<string | null>(null);
+
   // Auto-select root span on trace change
   useEffect(() => {
-    if (trace && trace.spans.length > 0) {
-      setSelectedSpan(trace.spans[0]);
-    } else {
+    if (!trace || trace.spans.length === 0) {
       setSelectedSpan(null);
+      currentTraceIdRef.current = null;
+      return;
     }
+
+    // Only reset selectedSpan if we switched to a different trace!
+    if (currentTraceIdRef.current !== trace.traceId) {
+      currentTraceIdRef.current = trace.traceId;
+      setSelectedSpan(trace.spans[0]);
+      return;
+    }
+
+    // When the same trace is refreshed in the background, retain user's selected span
+    setSelectedSpan((prev) => {
+      if (!prev) return trace.spans[0];
+      const match = trace.spans.find((s) => s.spanId === prev.spanId);
+      return match || trace.spans[0];
+    });
   }, [trace]);
 
-  // Identify the bottleneck span (longest duration child span or root if single)
+  // Identify bottleneck span (longest duration span)
   const bottleneckSpanId = useMemo(() => {
     if (!trace || trace.spans.length === 0) return null;
     let maxSpan = trace.spans[0];
@@ -49,38 +169,18 @@ export const GraphView: React.FC<GraphViewProps> = ({
     return maxSpan.spanId;
   }, [trace]);
 
-  // Calculate Node Layout Coordinates
-  const nodePositions = useMemo(() => {
-    if (!trace || trace.spans.length === 0) return new Map<string, { x: number; y: number; w: number; h: number }>();
-    const positions = new Map<string, { x: number; y: number; w: number; h: number }>();
-
-    const nodeWidth = 230;
-    const nodeHeight = 78;
-    const spacingX = 55;
-    const spacingY = 50;
-
-    if (layout === 'horizontal') {
-      // Horizontal sequential / tree layout
-      trace.spans.forEach((span, idx) => {
-        const x = idx * (nodeWidth + spacingX);
-        // Slight vertical offset for child depths
-        const y = span.depth * 30;
-        positions.set(span.spanId, { x, y, w: nodeWidth, h: nodeHeight });
-      });
-    } else {
-      // Vertical hierarchical layout
-      const levelCounts = new Map<number, number>();
-      trace.spans.forEach((span) => {
-        const currentCount = levelCounts.get(span.depth) || 0;
-        const x = currentCount * (nodeWidth + spacingX);
-        const y = span.depth * (nodeHeight + spacingY);
-        positions.set(span.spanId, { x, y, w: nodeWidth, h: nodeHeight });
-        levelCounts.set(span.depth, currentCount + 1);
-      });
+  // Calculate layout using the smart graphLayout algorithm
+  const layout = useMemo(() => {
+    if (!trace || trace.spans.length === 0) {
+      return {
+        nodes: [],
+        edges: [],
+        bounds: { minX: 0, minY: 0, maxX: 800, maxY: 600, width: 800, height: 600 },
+        nodeMap: new Map(),
+      };
     }
-
-    return positions;
-  }, [trace, layout]);
+    return calculateGraphLayout(trace.spans, trace.durationMs, layoutMode);
+  }, [trace, layoutMode]);
 
   // Copy Trace ID
   const handleCopyTraceId = () => {
@@ -90,23 +190,39 @@ export const GraphView: React.FC<GraphViewProps> = ({
     setTimeout(() => setCopiedId(false), 2000);
   };
 
-  // Copy Stack Trace
-  const handleCopyStackTrace = (stack: string) => {
-    navigator.clipboard.writeText(stack);
-    setCopiedStack(true);
-    setTimeout(() => setCopiedStack(false), 2000);
-  };
+  // Native non-passive Wheel Zoom to strictly prevent browser whole-page zoom
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
 
-  // Mouse wheel zoom
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-    setScale((prev) => Math.min(Math.max(prev * zoomFactor, 0.2), 2.5));
-  };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const rect = container.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+
+      setScale((prevScale) => {
+        const newScale = Math.min(Math.max(prevScale * zoomFactor, 0.2), 2.5);
+        setPan((prevPan) => ({
+          x: mouseX - (mouseX - prevPan.x) * (newScale / prevScale),
+          y: mouseY - (mouseY - prevPan.y) * (newScale / prevScale),
+        }));
+        return newScale;
+      });
+    };
+
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+    };
+  }, []);
 
   // Pan controls
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return; // only left click
+    if (e.button !== 0) return;
     setIsDragging(true);
     dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
   };
@@ -122,31 +238,40 @@ export const GraphView: React.FC<GraphViewProps> = ({
   const handleMouseUp = () => setIsDragging(false);
 
   const handleFit = () => {
-    setScale(0.65);
-    setPan({ x: 50, y: 150 });
+    if (!containerRef.current || layout.nodes.length === 0) return;
+    const { clientWidth, clientHeight } = containerRef.current;
+    const zoomX = (clientWidth - 100) / Math.max(layout.bounds.width, 300);
+    const zoomY = (clientHeight - 100) / Math.max(layout.bounds.height, 200);
+    const fitScale = Math.min(Math.max(Math.min(zoomX, zoomY), 0.25), 1.1);
+
+    setScale(fitScale);
+    setPan({
+      x: 50,
+      y: layoutMode === 'vertical' ? 50 : 80,
+    });
   };
 
   const handleResetZoom = () => {
     setScale(1.0);
-    setPan({ x: 80, y: 120 });
+    setPan({ x: 60, y: 80 });
   };
 
   if (!trace) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[70vh] text-center p-8">
-        <div className="w-16 h-16 rounded-2xl bg-slate-800/60 border border-white/10 flex items-center justify-center mb-4 text-slate-400">
-          <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <div className="flex flex-col items-center justify-center min-h-[calc(100vh-66px)] mt-[66px] text-center p-6 bg-[#F1F3F5]">
+        <div className="w-14 h-14 rounded-2xl bg-white border border-[#CBD5E1] shadow-card flex items-center justify-center mb-3 text-[#2563EB]">
+          <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <circle cx="12" cy="12" r="10" />
             <path d="M12 6v6l4 2" />
           </svg>
         </div>
-        <h3 className="text-xl font-semibold text-white mb-2">No Trace Selected</h3>
-        <p className="text-sm text-slate-400 max-w-md mb-6">
+        <h3 className="text-lg font-bold text-[#263238] mb-1">No Trace Selected</h3>
+        <p className="text-xs text-[#475569] max-w-md mb-4 leading-relaxed">
           Execute an API request in the Endpoint Runner, select a captured trace from the Dashboard, or upload JSON to visualize its execution graph.
         </p>
         <button
           onClick={onBackToDashboard}
-          className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm transition-all shadow-lg shadow-blue-600/30"
+          className="btn-run px-4 py-2 rounded-lg text-white font-bold text-xs shadow-sm"
         >
           View Dashboard Traces
         </button>
@@ -154,11 +279,33 @@ export const GraphView: React.FC<GraphViewProps> = ({
     );
   }
 
+  // Active span for JSON inspector & Drawer
+  const activeSpan = selectedSpan || (trace.spans.length > 0 ? trace.spans[0] : null);
+
+  // Compute hierarchical breadcrumbs from root to active span (matching Image 2)
+  const spanBreadcrumbs = useMemo(() => {
+    if (!activeSpan || !trace) return [];
+    const spanMap = new Map<string, Span>(trace.spans.map((s) => [s.spanId, s]));
+    const path: Span[] = [];
+    let curr: Span | undefined = activeSpan;
+    const visited = new Set<string>();
+
+    while (curr && !visited.has(curr.spanId)) {
+      visited.add(curr.spanId);
+      path.unshift(curr);
+      if (!curr.parentSpanId) break;
+      curr = spanMap.get(curr.parentSpanId);
+    }
+    return path;
+  }, [activeSpan, trace]);
+
   return (
-    <div className="relative flex flex-col w-full h-[calc(100vh-65px)] mt-[65px] bg-[#07080d] select-none overflow-hidden">
-      {/* Top Header Bar (Matching Image 1) */}
-      <div className="flex items-center justify-between px-6 py-3 bg-[#0a0d18]/90 border-b border-white/[0.08] backdrop-blur-xl z-20">
-        <div className="flex items-center gap-3.5 flex-wrap">
+    <div className="relative flex flex-col w-full h-[calc(100vh-66px)] mt-[66px] bg-[#F1F3F5] select-none overflow-hidden">
+      {/* =========================================================================
+          TOP HEADER BAR (Matching Images 1, 2, 3)
+          ========================================================================= */}
+      <div className="flex items-center justify-between px-3 sm:px-5 py-2.5 bg-white border-b border-[#CBD5E1] z-20 flex-wrap gap-2 shadow-xs">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           {/* Traces selector pill */}
           <div className="relative">
             <select
@@ -167,98 +314,97 @@ export const GraphView: React.FC<GraphViewProps> = ({
                 const found = traces.find((t) => t.traceId === e.target.value);
                 if (found) onSelectTrace(found);
               }}
-              className="appearance-none pl-3.5 pr-8 py-1 rounded-full text-xs font-semibold bg-[#141829] text-white border border-white/15 hover:border-white/30 cursor-pointer transition-all shadow-sm"
+              className="appearance-none pl-3 pr-7 py-1 rounded-lg text-xs font-bold bg-[#F8FAFC] text-[#263238] border border-[#CBD5E1] cursor-pointer focus:outline-none focus:border-[#2563EB]"
             >
               {traces.map((t, idx) => (
                 <option key={t.traceId} value={t.traceId}>
-                  Traces {idx + 1}: {t.name}
+                  Traces ({idx + 1}/{traces.length})
                 </option>
               ))}
             </select>
-            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-[10px]">▼</span>
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500 text-[10px]">▼</span>
           </div>
 
-          {/* Status Badge */}
-          <div
-            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold tracking-wide uppercase border ${
+          {/* Status Badge: ● SUCCESS (emerald) or ● ERROR (rose) */}
+          <span
+            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase border ${
               trace.status === 'OK'
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
-                : 'bg-rose-500/15 text-rose-400 border-rose-500/40 shadow-[0_0_12px_rgba(239,68,68,0.25)]'
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                : 'bg-rose-50 text-rose-700 border-rose-300'
             }`}
           >
-            <span className={`w-2 h-2 rounded-full ${trace.status === 'OK' ? 'bg-emerald-400' : 'bg-rose-400 animate-pulse'}`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${trace.status === 'OK' ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`} />
             {trace.status === 'OK' ? 'SUCCESS' : 'ERROR'}
-          </div>
+          </span>
 
-          {/* Trace Name */}
-          <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
+          {/* Trace Name (Bold) */}
+          <h2 className="text-xs sm:text-sm font-extrabold text-[#263238] tracking-tight truncate max-w-[220px] sm:max-w-none">
             {trace.name}
           </h2>
 
           {/* Timing & Spans */}
-          <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
-            <span className="flex items-center gap-1 text-cyan-400 font-semibold">
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 16 14" />
-              </svg>
-              {trace.durationMs.toFixed(2)} ms
+          <div className="flex items-center gap-2 text-xs font-mono text-[#64748B]">
+            <span className="font-bold text-[#2563EB]">
+              ⏱ {trace.durationMs.toFixed(2)} ms
             </span>
             <span>•</span>
             <span>{trace.spanCount} spans</span>
-            {trace.errorCount > 0 && (
-              <>
-                <span>•</span>
-                <span className="text-rose-400 font-semibold">{trace.errorCount} error</span>
-              </>
-            )}
           </div>
 
-          {/* Trace ID with 1-click copy */}
+          {/* Trace ID Copy */}
           <button
             onClick={handleCopyTraceId}
             title="Click to copy Trace ID"
-            className="flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-mono bg-white/[0.04] text-slate-400 hover:text-white hover:bg-white/[0.08] border border-white/10 transition-colors"
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-[#F8FAFC] text-[#64748B] hover:text-[#263238] border border-[#CBD5E1] transition-colors"
           >
-            <span>ID: {trace.traceId.substring(0, 10)}...</span>
-            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-            </svg>
-            {copiedId && <span className="text-emerald-400 text-[10px] ml-1">Copied!</span>}
+            <span>ID: {trace.traceId.substring(0, 8)}...</span>
+            <span className="text-[11px]">{copiedId ? '✓' : '📋'}</span>
           </button>
         </div>
 
-        {/* View Mode & Layout Buttons (Image 1 style) */}
+        {/* View Switcher: Layout Pills + Modes [Graph] | [Node ↔ JSON] | [JSON] */}
         <div className="flex items-center gap-2">
-          {/* Horizontal / Vertical layout toggle */}
-          <div className="flex items-center p-0.5 rounded-lg bg-[#121626] border border-white/10 text-xs">
-            <button
-              onClick={() => setLayout('horizontal')}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-all ${
-                layout === 'horizontal' ? 'bg-blue-600 text-white font-medium shadow-sm' : 'text-slate-400 hover:text-white'
-              }`}
-              title="Horizontal pipeline view"
-            >
-              <span>Horizontal ⇆</span>
-            </button>
-            <button
-              onClick={() => setLayout('vertical')}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-all ${
-                layout === 'vertical' ? 'bg-blue-600 text-white font-medium shadow-sm' : 'text-slate-400 hover:text-white'
-              }`}
-              title="Vertical tree view"
-            >
-              <span>Vertical ⇅</span>
-            </button>
-          </div>
+          {/* Layout Orientation (Horizontal Tree vs Vertical Tree vs Pipeline) */}
+          {mode !== 'json' && (
+            <div className="flex items-center p-0.5 rounded-lg bg-[#F1F5F9] border border-[#CBD5E1] text-xs font-bold">
+              <button
+                onClick={() => setLayoutMode('horizontal')}
+                className={`px-2 py-1 rounded-md text-[11px] transition-all ${
+                  layoutMode === 'horizontal' ? 'bg-white text-[#2563EB] shadow-xs' : 'text-[#64748B]'
+                }`}
+                title="Horizontal Tree Hierarchy (Left-to-Right)"
+              >
+                Tree ⇆
+              </button>
+              <button
+                onClick={() => setLayoutMode('vertical')}
+                className={`px-2 py-1 rounded-md text-[11px] transition-all ${
+                  layoutMode === 'vertical' ? 'bg-white text-[#2563EB] shadow-xs' : 'text-[#64748B]'
+                }`}
+                title="Vertical Tree Hierarchy (Top-to-Bottom)"
+              >
+                Tree ⇅
+              </button>
+              <button
+                onClick={() => setLayoutMode('pipeline')}
+                className={`px-2 py-1 rounded-md text-[11px] transition-all ${
+                  layoutMode === 'pipeline' ? 'bg-white text-[#2563EB] shadow-xs' : 'text-[#64748B]'
+                }`}
+                title="Sequential Pipeline Chain"
+              >
+                Chain ➔
+              </button>
+            </div>
+          )}
 
-          {/* Mode switch */}
-          <div className="flex items-center p-0.5 rounded-lg bg-[#121626] border border-white/10 text-xs">
+          {/* Three Mode Tabs: Graph | Node <-> JSON | JSON */}
+          <div className="flex items-center p-0.5 rounded-lg bg-[#F1F5F9] border border-[#CBD5E1] text-xs font-semibold">
             <button
               onClick={() => setMode('graph')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md font-medium transition-all ${
-                mode === 'graph' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                mode === 'graph'
+                  ? 'bg-white text-[#2563EB] border border-[#CBD5E1] shadow-xs'
+                  : 'text-[#475569] hover:text-[#263238]'
               }`}
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -266,517 +412,861 @@ export const GraphView: React.FC<GraphViewProps> = ({
                 <circle cx="18" cy="18" r="3" />
                 <path d="M8.5 8.5l7 7" />
               </svg>
-              Graph
+              <span>Graph</span>
             </button>
 
             <button
               onClick={() => setMode('node-json')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md font-medium transition-all ${
-                mode === 'node-json' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                mode === 'node-json'
+                  ? 'bg-white text-[#2563EB] border border-[#CBD5E1] shadow-xs'
+                  : 'text-[#475569] hover:text-[#263238]'
               }`}
             >
-              Node ↔ JSON
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M16 3h5v5" />
+                <path d="M4 20L21 3" />
+                <path d="M21 16v5h-5" />
+                <path d="M15 15l6 6" />
+                <path d="M4 4l5 5" />
+              </svg>
+              <span>Node ↔ JSON</span>
             </button>
 
             <button
               onClick={() => setMode('json')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md font-medium transition-all ${
-                mode === 'json' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                mode === 'json'
+                  ? 'bg-white text-[#2563EB] border border-[#CBD5E1] shadow-xs'
+                  : 'text-[#475569] hover:text-[#263238]'
               }`}
             >
-              JSON
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+              <span>JSON</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Floating Canvas Controls (Image 1 top-left floating pill) */}
-      {mode !== 'json' && (
-        <div className="absolute top-16 left-6 z-30 flex items-center gap-2 p-1.5 rounded-xl bg-[#0e1220]/90 border border-white/15 backdrop-blur-xl shadow-2xl">
-          {/* Zoom Out */}
-          <button
-            onClick={() => setScale((prev) => Math.max(prev - 0.1, 0.2))}
-            className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.1] text-slate-300 flex items-center justify-center text-sm font-bold"
-            title="Zoom Out"
-          >
-            −
-          </button>
-          <span className="text-xs font-mono text-slate-200 min-w-[42px] text-center font-medium">
-            {Math.round(scale * 100)}%
-          </span>
-          {/* Zoom In */}
-          <button
-            onClick={() => setScale((prev) => Math.min(prev + 0.1, 2.5))}
-            className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.1] text-slate-300 flex items-center justify-center text-sm font-bold"
-            title="Zoom In"
-          >
-            +
-          </button>
-
-          <div className="w-[1px] h-4 bg-white/10 mx-0.5" />
-
-          {/* Fit */}
-          <button
-            onClick={handleFit}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-white/[0.08]"
-            title="Fit graph to view"
-          >
-            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-            </svg>
-            Fit
-          </button>
-
-          {/* 100% Reset */}
-          <button
-            onClick={handleResetZoom}
-            className="px-2 py-1 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-white/[0.08]"
-            title="Reset to 100%"
-          >
-            100%
-          </button>
-
-          <div className="w-[1px] h-4 bg-white/10 mx-0.5" />
-
-          {/* Bottleneck Highlighter Button */}
-          <button
-            onClick={() => setHighlightBottleneck((prev) => !prev)}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-              highlightBottleneck
-                ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-black shadow-lg shadow-amber-500/30'
-                : 'bg-white/[0.04] text-amber-400 hover:bg-white/[0.08]'
-            }`}
-          >
-            <span>🔥</span>
-            Bottleneck
-          </button>
-        </div>
-      )}
-
-      {/* Main Canvas Area */}
+      {/* =========================================================================
+          MAIN WORKSPACE
+          ========================================================================= */}
       <div className="relative flex-1 w-full h-full overflow-hidden flex">
         {mode === 'json' ? (
-          // Full Raw JSON View
-          <div className="w-full h-full p-6 overflow-auto bg-[#070911]">
-            <div className="max-w-5xl mx-auto rounded-2xl bg-[#0c0f1d] border border-white/10 p-6 shadow-2xl">
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-xs font-mono text-cyan-400 font-semibold">Raw TraceRecord JSON</span>
-                <button
-                  onClick={() => navigator.clipboard.writeText(JSON.stringify(trace, null, 2))}
-                  className="px-3 py-1 rounded-md text-xs bg-white/10 hover:bg-white/20 text-white font-medium"
-                >
-                  Copy JSON
-                </button>
-              </div>
-              <pre className="text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed">
-                {JSON.stringify(trace, null, 2)}
-              </pre>
+          // ======================== MODE 3: FULL JSON VIEW ========================
+          <div className="w-full h-full p-4 sm:p-6 overflow-auto bg-[#F1F3F5]">
+            <div className="max-w-5xl mx-auto h-full flex flex-col rounded-2xl bg-white border border-[#CBD5E1] shadow-card overflow-hidden">
+              <CodeViewer
+                jsonString={JSON.stringify(trace, null, 2)}
+                title="Full TraceRecord Schema JSON"
+                badge={`${trace.spanCount} Spans`}
+              />
             </div>
           </div>
         ) : (
-          // Interactive Graph Workspace
-          <div
-            ref={containerRef}
-            onWheel={handleWheel}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            className="relative flex-1 w-full h-full cursor-grab active:cursor-grabbing overflow-hidden dot-grid-bg"
-          >
-            {/* SVG Canvas for Connectors and Nodes */}
+          // ======================== MODES 1 & 2: GRAPH WORKSPACE ========================
+          <div className="relative flex-1 w-full h-full flex flex-row overflow-hidden">
+            {/* Left Interactive Canvas Area */}
             <div
-              className="absolute transform-gpu transition-transform duration-75 origin-top-left"
-              style={{
-                transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
-              }}
+              ref={containerRef}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              style={{ minWidth: 0, touchAction: 'none' }}
+              className={`relative flex-1 h-full cursor-grab active:cursor-grabbing overflow-hidden dot-grid-bg select-none ${
+                isInspectorOpen ? 'border-r border-[#CBD5E1]' : ''
+              }`}
             >
-              {/* Connecting Lines SVG */}
-              <svg className="absolute top-0 left-0 w-[5000px] h-[5000px] pointer-events-none overflow-visible">
-                <defs>
-                  <linearGradient id="line-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.7" />
-                    <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.8" />
-                  </linearGradient>
-                  <linearGradient id="line-gradient-bottleneck" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.9" />
-                    <stop offset="100%" stopColor="#ef4444" stopOpacity="0.9" />
-                  </linearGradient>
-                </defs>
+              {/* Floating Canvas Controls (Top-Left inside canvas: Zoom, Fit, 100%, Bottleneck) */}
+              <div
+                className="absolute top-4 left-4 z-30 flex items-center gap-1.5 p-1 rounded-xl bg-white border border-[#CBD5E1] shadow-card text-[#263238]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  onClick={() => setScale((prev) => Math.max(prev - 0.1, 0.2))}
+                  className="w-6 h-6 rounded-md bg-[#F1F5F9] hover:bg-[#E2E8F0] text-[#263238] flex items-center justify-center text-xs font-bold"
+                  title="Zoom Out"
+                >
+                  −
+                </button>
+                <span className="text-[11px] font-mono text-[#263238] min-w-[36px] text-center font-bold">
+                  {Math.round(scale * 100)}%
+                </span>
+                <button
+                  onClick={() => setScale((prev) => Math.min(prev + 0.1, 2.5))}
+                  className="w-6 h-6 rounded-md bg-[#F1F5F9] hover:bg-[#E2E8F0] text-[#263238] flex items-center justify-center text-xs font-bold"
+                  title="Zoom In"
+                >
+                  +
+                </button>
 
-                {trace.spans.map((span) => {
-                  if (!span.parentSpanId) return null;
-                  const parentPos = nodePositions.get(span.parentSpanId);
-                  const childPos = nodePositions.get(span.spanId);
-                  if (!parentPos || !childPos) return null;
+                <div className="w-[1px] h-3.5 bg-[#CBD5E1] mx-0.5" />
 
-                  const isBottleneck = highlightBottleneck && span.spanId === bottleneckSpanId;
+                <button
+                  onClick={handleFit}
+                  className="px-2 py-0.5 rounded-md text-[11px] font-bold text-[#475569] hover:text-[#263238] hover:bg-[#F1F5F9]"
+                  title="Fit to screen"
+                >
+                  ⛶ Fit
+                </button>
 
-                  let pathD = '';
-                  if (layout === 'horizontal') {
-                    // Connect from right of parent to left of child
-                    const startX = parentPos.x + parentPos.w;
-                    const startY = parentPos.y + parentPos.h / 2;
-                    const endX = childPos.x;
-                    const endY = childPos.y + childPos.h / 2;
-                    const controlX = (startX + endX) / 2;
-                    pathD = `M ${startX} ${startY} C ${controlX} ${startY}, ${controlX} ${endY}, ${endX} ${endY}`;
-                  } else {
-                    // Connect from bottom of parent to top of child
-                    const startX = parentPos.x + parentPos.w / 2;
-                    const startY = parentPos.y + parentPos.h;
-                    const endX = childPos.x + childPos.w / 2;
-                    const endY = childPos.y;
-                    const controlY = (startY + endY) / 2;
-                    pathD = `M ${startX} ${startY} C ${startX} ${controlY}, ${endX} ${controlY}, ${endX} ${endY}`;
-                  }
+                <button
+                  onClick={handleResetZoom}
+                  className="px-2 py-0.5 rounded-md text-[11px] font-bold text-[#475569] hover:text-[#263238] hover:bg-[#F1F5F9]"
+                  title="Reset to 100%"
+                >
+                  ↺ 100%
+                </button>
+
+                <div className="w-[1px] h-3.5 bg-[#CBD5E1] mx-0.5" />
+
+                {/* Bottleneck Highlighter Button */}
+                <button
+                  onClick={() => setHighlightBottleneck((prev) => !prev)}
+                  className={`flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold transition-all ${
+                    highlightBottleneck
+                      ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-xs'
+                      : 'bg-[#F1F5F9] text-[#475569] hover:bg-[#E2E8F0]'
+                  }`}
+                  title="Highlight slowest bottleneck span"
+                >
+                  <span>🔥 Bottleneck</span>
+                </button>
+              </div>
+
+              {/* Status Pill for Mode 2: Live Connected Graph <-> JSON */}
+              {mode === 'node-json' && (
+                <div className="absolute top-4 right-4 z-20 hidden sm:flex items-center gap-2 rounded-full border border-[#BFDBFE] bg-white/95 px-3 py-1 text-xs text-[#2563EB] shadow-xs backdrop-blur-md">
+                  <span className="w-2 h-2 rounded-full bg-[#2563EB] animate-pulse" />
+                  <span className="font-bold">Live Connected Graph ↔ JSON</span>
+                </div>
+              )}
+
+              {/* SVG Canvas for Connectors & Scaled Nodes */}
+              <div
+                className="absolute inset-0 origin-top-left will-change-transform"
+                style={{
+                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+                }}
+              >
+                {/* SVG Connecting Flow Lines with Arrowheads */}
+                <svg
+                  className="absolute top-0 left-0 pointer-events-none overflow-visible"
+                  style={{
+                    width: layout.bounds.width + 1000,
+                    height: layout.bounds.height + 1000,
+                  }}
+                >
+                  <defs>
+                    {/* GREEN ARROW FOR SUCCESS CALLS */}
+                    <marker
+                      id="arrow-green"
+                      viewBox="0 0 10 10"
+                      refX="8.5"
+                      refY="5"
+                      markerUnits="userSpaceOnUse"
+                      markerWidth="9"
+                      markerHeight="9"
+                      orient="auto"
+                    >
+                      <path
+                        d="M 1.5 1.75 L 8.5 5 L 1.5 8.25 L 3 5 Z"
+                        fill="#10B981"
+                        stroke="#10B981"
+                        strokeWidth="0.5"
+                        strokeLinejoin="round"
+                      />
+                    </marker>
+
+                    {/* RED ARROW FOR FAILURE CALLS */}
+                    <marker
+                      id="arrow-red"
+                      viewBox="0 0 10 10"
+                      refX="8.5"
+                      refY="5"
+                      markerUnits="userSpaceOnUse"
+                      markerWidth="9"
+                      markerHeight="9"
+                      orient="auto"
+                    >
+                      <path
+                        d="M 1.5 1.75 L 8.5 5 L 1.5 8.25 L 3 5 Z"
+                        fill="#EF4444"
+                        stroke="#EF4444"
+                        strokeWidth="0.5"
+                        strokeLinejoin="round"
+                      />
+                    </marker>
+
+                    {/* BLUE ARROW FOR ACTIVE/SELECTED EDGES */}
+                    <marker
+                      id="arrow-active"
+                      viewBox="0 0 10 10"
+                      refX="8.5"
+                      refY="5"
+                      markerUnits="userSpaceOnUse"
+                      markerWidth="9"
+                      markerHeight="9"
+                      orient="auto"
+                    >
+                      <path
+                        d="M 1.5 1.75 L 8.5 5 L 1.5 8.25 L 3 5 Z"
+                        fill="#2563EB"
+                        stroke="#2563EB"
+                        strokeWidth="0.5"
+                        strokeLinejoin="round"
+                      />
+                    </marker>
+
+                    {/* AMBER ARROW FOR BOTTLENECK EDGES */}
+                    <marker
+                      id="arrow-amber"
+                      viewBox="0 0 10 10"
+                      refX="8.5"
+                      refY="5"
+                      markerUnits="userSpaceOnUse"
+                      markerWidth="9"
+                      markerHeight="9"
+                      orient="auto"
+                    >
+                      <path
+                        d="M 1.5 1.75 L 8.5 5 L 1.5 8.25 L 3 5 Z"
+                        fill="#D97706"
+                        stroke="#D97706"
+                        strokeWidth="0.5"
+                        strokeLinejoin="round"
+                      />
+                    </marker>
+                  </defs>
+
+                  {/* RENDER ALL EDGES: GREEN FOR SUCCESS, RED FOR FAILURE */}
+                  {layout.edges.map((edge) => {
+                    const isSourceSelected = activeSpan?.spanId === edge.sourceId;
+                    const isTargetSelected = activeSpan?.spanId === edge.targetId;
+                    const isEdgeActive = isSourceSelected || isTargetSelected;
+
+                    const isTargetBottleneck =
+                      highlightBottleneck && edge.targetId === bottleneckSpanId;
+                    const isError = edge.isError;
+
+                    // COLOR ASSIGNMENT: Green for success, Red for failure
+                    const strokeColor = isError
+                      ? '#EF4444' // RED FOR FAILURE
+                      : isTargetBottleneck
+                      ? '#D97706' // AMBER FOR BOTTLENECK
+                      : isEdgeActive
+                      ? '#2563EB' // BRIGHT BLUE FOR ACTIVE
+                      : '#10B981'; // GREEN FOR SUCCESS
+
+                    const markerUrl = isError
+                      ? 'url(#arrow-red)'
+                      : isTargetBottleneck
+                      ? 'url(#arrow-amber)'
+                      : isEdgeActive
+                      ? 'url(#arrow-active)'
+                      : 'url(#arrow-green)';
+
+                    return (
+                      <g key={edge.id}>
+                        {/* Animated Flow Arrow: Clear single line, no outer pipe surround */}
+                        <path
+                          d={edge.path}
+                          fill="none"
+                          stroke={strokeColor}
+                          strokeWidth={isEdgeActive ? 2.5 : 2}
+                          className={
+                            isError
+                              ? 'flow-line-error'
+                              : isTargetBottleneck
+                              ? 'flow-line-bottleneck'
+                              : 'flow-line-success'
+                          }
+                          markerEnd={markerUrl}
+                        />
+                      </g>
+                    );
+                  })}
+                </svg>
+
+                {/* =============================================================
+                    RENDER NODES WITH ROUNDED CORNER STRUCTURE (White Theme)
+                    ============================================================= */}
+                {layout.nodes.map((node) => {
+                  const span = node.span as Span;
+                  const isSelected = activeSpan?.spanId === node.id;
+                  const isBottleneck = highlightBottleneck && node.isSlowest;
+                  const isError = node.isError;
 
                   return (
-                    <g key={`edge-${span.spanId}`}>
-                      {/* Glow halo */}
-                      <path
-                        d={pathD}
-                        fill="none"
-                        stroke={isBottleneck ? '#f59e0b' : '#3b82f6'}
-                        strokeWidth={isBottleneck ? 4 : 2}
-                        strokeOpacity={isBottleneck ? 0.4 : 0.2}
-                      />
-                      {/* Core stroke */}
-                      <path
-                        d={pathD}
-                        fill="none"
-                        stroke={isBottleneck ? 'url(#line-gradient-bottleneck)' : 'url(#line-gradient)'}
-                        strokeWidth={isBottleneck ? 2.5 : 1.8}
-                        strokeDasharray={span.status === 'ERROR' ? '4 4' : 'none'}
-                      />
-                    </g>
-                  );
-                })}
-              </svg>
+                    <div
+                      key={node.id}
+                      onMouseEnter={() => handleNodeMouseEnter(node, span)}
+                      onMouseLeave={handleNodeMouseLeave}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedSpan(span);
+                        setIsInspectorOpen(true);
+                      }}
+                      style={{
+                        transform: `translate(${node.x}px, ${node.y}px)`,
+                        width: `${node.width}px`,
+                        height: `${node.height}px`,
+                        borderRadius: '16px', // Rounded corner structure as requested
+                      }}
+                      className={`group absolute transition-all duration-150 cursor-pointer p-3 flex flex-col justify-between select-none ${
+                        isSelected
+                          ? 'bg-white border-2 border-[#2563EB] ring-4 ring-[#2563EB]/25 shadow-lg shadow-[#2563EB]/15'
+                          : isBottleneck
+                          ? 'bg-white border-2 border-amber-500 ring-2 ring-amber-500/20 shadow-md'
+                          : isError
+                          ? 'bg-white border-2 border-rose-500 ring-2 ring-rose-500/20 shadow-md'
+                          : 'bg-white border border-[#CBD5E1] hover:border-[#10B981] shadow-xs hover:shadow-md'
+                      }`}
+                    >
+                      {/* Top Row: Category Badge + Duration + Status Indicator */}
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold tracking-wide uppercase border ${
+                              span.category === 'CONTROLLER'
+                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : span.category === 'SERVICE'
+                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                : span.category === 'REPOSITORY'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : (span.category as string) === 'DATABASE'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : 'bg-slate-100 text-slate-700 border-slate-300'
+                            }`}
+                          >
+                            {span.category || 'SPAN'}
+                          </span>
 
-              {/* Render Nodes (Circular / Capsule Form) */}
-              {trace.spans.map((span) => {
-                const pos = nodePositions.get(span.spanId);
-                if (!pos) return null;
-
-                const isSelected = selectedSpan?.spanId === span.spanId;
-                const isBottleneck = highlightBottleneck && span.spanId === bottleneckSpanId;
-                const isError = span.status === 'ERROR';
-
-                // Percentage bar calculation relative to trace
-                const barWidthPct = Math.max(5, Math.min(100, (span.durationMs / trace.durationMs) * 100));
-
-                return (
-                  <div
-                    key={span.spanId}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedSpan(span);
-                    }}
-                    style={{
-                      transform: `translate(${pos.x}px, ${pos.y}px)`,
-                      width: `${pos.w}px`,
-                      height: `${pos.h}px`,
-                    }}
-                    className={`absolute rounded-xl transition-all duration-150 cursor-pointer p-2.5 flex flex-col justify-between backdrop-blur-md ${
-                      isSelected
-                        ? 'bg-[#181e35] border-2 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.45)] ring-2 ring-cyan-400/30'
-                        : isBottleneck
-                        ? 'bg-[#1c1813] border-2 border-amber-400 shadow-[0_0_22px_rgba(245,158,11,0.5)] ring-2 ring-amber-400/20'
-                        : isError
-                        ? 'bg-[#1c1015] border border-rose-500/80 shadow-[0_0_16px_rgba(239,68,68,0.35)]'
-                        : 'bg-[#0f1322]/95 border border-white/[0.12] hover:border-cyan-400/60 hover:bg-[#141a2e]'
-                    }`}
-                  >
-                    {/* Node Header */}
-                    <div className="flex items-center justify-between gap-1.5">
-                      {/* Left: Category capsule */}
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        {/* Circular status indicator */}
-                        <div
-                          className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-black shrink-0 ${
-                            isError
-                              ? 'bg-rose-500 text-white animate-pulse'
-                              : isBottleneck
-                              ? 'bg-amber-400 text-black'
-                              : 'bg-gradient-to-tr from-blue-500 to-cyan-400 text-black'
-                          }`}
-                        >
-                          {isBottleneck ? '🔥' : isError ? '!' : '✓'}
+                          <span className="font-mono text-[11px] font-bold text-[#263238]">
+                            {node.durationMs.toFixed(1)} ms
+                          </span>
                         </div>
 
+                        {/* Status Dot: Green for Success, Red for Failure */}
                         <span
-                          className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded ${
-                            span.category === 'CONTROLLER'
-                              ? 'bg-cyan-500/15 text-cyan-300'
-                              : span.category === 'LLM'
-                              ? 'bg-purple-500/15 text-purple-300'
-                              : span.category === 'REPOSITORY'
-                              ? 'bg-indigo-500/15 text-indigo-300'
-                              : 'bg-blue-500/15 text-blue-300'
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            isError ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'
                           }`}
-                        >
-                          {span.category}
-                        </span>
+                          title={isError ? 'Error in span' : 'Success'}
+                        />
                       </div>
 
-                      {/* Right: Duration pill */}
+                      {/* Middle: Method / Operation Name */}
+                      <div
+                        className="font-bold text-xs text-[#263238] tracking-tight truncate my-0.5 leading-snug group-hover:text-[#2563EB] transition-colors"
+                        title={span.name}
+                      >
+                        {span.name}
+                      </div>
+
+                      {/* Bottom Row: Rounded-Full Duration Bar + Details */}
+                      <div className="w-full space-y-1">
+                        <div className="w-full h-1.5 rounded-full bg-[#E2E8F0] overflow-hidden">
+                          <div
+                            style={{ width: `${Math.min(100, Math.max(5, node.durationPct))}%` }}
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              isBottleneck
+                                ? 'bg-amber-500'
+                                : isError
+                                ? 'bg-rose-500'
+                                : 'bg-emerald-500'
+                            }`}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* =============================================================
+                    FLOATING NODE HOVER INSPECT POPUP (Matching Image 2)
+                    ============================================================= */}
+                {hoveredNode && (
+                  <div
+                    onMouseEnter={handleTooltipMouseEnter}
+                    onMouseLeave={handleTooltipMouseLeave}
+                    style={{
+                      position: 'absolute',
+                      left: `${hoveredNode.node.x + hoveredNode.node.width / 2}px`,
+                      top:
+                        hoveredNode.node.y > 150
+                          ? `${hoveredNode.node.y - 12}px`
+                          : `${hoveredNode.node.y + hoveredNode.node.height + 12}px`,
+                      transform: hoveredNode.node.y > 150 ? 'translate(-50%, -100%)' : 'translateX(-50%)',
+                      zIndex: 60,
+                      width: '270px',
+                    }}
+                    className="bg-white border border-[#CBD5E1] rounded-2xl shadow-xl p-3.5 flex flex-col gap-2 select-none pointer-events-auto"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* Top Row: Category Badge + Status */}
+                    <div className="flex items-center justify-between">
                       <span
-                        className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                          isBottleneck
-                            ? 'bg-amber-400/20 text-amber-300 font-extrabold'
-                            : isError
-                            ? 'bg-rose-400/20 text-rose-300'
-                            : 'text-slate-300'
+                        className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold tracking-wide uppercase border ${
+                          hoveredNode.span.category === 'CONTROLLER'
+                            ? 'bg-blue-50 text-blue-700 border-blue-200'
+                            : hoveredNode.span.category === 'SERVICE'
+                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                            : hoveredNode.span.category === 'REPOSITORY'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-slate-100 text-slate-700 border-slate-300'
                         }`}
                       >
-                        {span.durationMs.toFixed(2)} ms
+                        {hoveredNode.span.category || 'SPAN'}
+                      </span>
+
+                      <span
+                        className={`inline-flex items-center gap-1 text-[11px] font-bold ${
+                          hoveredNode.span.status === 'OK' ? 'text-emerald-600' : 'text-rose-600'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            hoveredNode.span.status === 'OK' ? 'bg-emerald-500' : 'bg-rose-500'
+                          }`}
+                        />
+                        {hoveredNode.span.status === 'OK' ? 'Success' : 'Error'}
                       </span>
                     </div>
 
-                    {/* Node Title (Span Name / Method) */}
-                    <div className="text-xs font-semibold text-white tracking-tight truncate my-1" title={span.name}>
-                      {span.name}
+                    {/* Title */}
+                    <div className="font-extrabold text-xs text-[#263238] tracking-tight truncate leading-tight">
+                      {hoveredNode.span.name}
                     </div>
 
-                    {/* Duration Progress Bar (Image 1 style) */}
-                    <div className="w-full">
-                      <div className="w-full h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                        <div
-                          style={{ width: `${barWidthPct}%` }}
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            isBottleneck
-                              ? 'bg-gradient-to-r from-amber-400 to-orange-500 shadow-[0_0_8px_#f59e0b]'
-                              : isError
-                              ? 'bg-rose-500 shadow-[0_0_8px_#ef4444]'
-                              : 'bg-gradient-to-r from-blue-500 to-cyan-400 shadow-[0_0_8px_#06b6d4]'
-                          }`}
-                        />
-                      </div>
-                      <div className="flex justify-between items-center text-[9px] font-mono text-slate-400 mt-1">
-                        <span>+{span.offsetMs.toFixed(1)}ms</span>
-                        <span>{barWidthPct.toFixed(0)}%</span>
-                      </div>
+                    {/* Metrics Row */}
+                    <div className="flex items-center gap-2.5 text-[11px] font-mono text-[#64748B]">
+                      <span className="flex items-center gap-1 font-bold text-[#263238]">
+                        <span>⏱ Duration:</span>
+                        <span className="text-[#2563EB]">{hoveredNode.span.durationMs.toFixed(1)} ms</span>
+                      </span>
+                      <span>•</span>
+                      <span className="flex items-center gap-1">
+                        <span>Depth:</span>
+                        <span className="font-bold text-[#263238]">Level {hoveredNode.span.depth ?? 0}</span>
+                      </span>
                     </div>
+
+                    {/* Inspect Details Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedSpan(hoveredNode.span);
+                        setIsInspectorOpen(true);
+                        setHoveredNode(null);
+                      }}
+                      className="btn-run w-full py-1.5 px-3 rounded-lg text-white font-bold text-xs shadow-xs flex items-center justify-center gap-1.5 cursor-pointer mt-1"
+                    >
+                      <span>Inspect Details</span>
+                      <span>↗</span>
+                    </button>
                   </div>
-                );
-              })}
+                )}
+              </div>
+
+              {/* Toggle to open Inspect Panel if closed */}
+              {!isInspectorOpen && (
+                <button
+                  onClick={() => setIsInspectorOpen(true)}
+                  className="absolute top-4 right-4 z-20 flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white border border-[#CBD5E1] shadow-card text-xs font-bold text-[#2563EB] hover:bg-[#EFF6FF] transition-all cursor-pointer"
+                  title="Open Inspect Panel"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect width="18" height="18" x="3" y="3" rx="2" />
+                    <line x1="15" y1="3" x2="15" y2="21" />
+                  </svg>
+                  <span>Inspect Panel</span>
+                </button>
+              )}
             </div>
 
-            {/* Minimap (Image 1 bottom-right floating card) */}
-            <div className="absolute bottom-5 right-5 z-30 w-48 h-28 rounded-xl bg-[#0c0f1c]/90 border border-white/15 backdrop-blur-xl p-2.5 shadow-2xl flex flex-col justify-between">
-              <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                <span>Minimap</span>
-                <span className="text-cyan-400 font-mono">{trace.spans.length} nodes</span>
-              </div>
-
-              {/* Minimap Visualizer */}
-              <div className="relative w-full h-16 rounded-lg bg-black/40 border border-white/[0.05] p-1 flex items-center justify-center overflow-hidden">
-                <div className="flex items-center gap-1 overflow-hidden px-1">
-                  {trace.spans.map((s) => {
-                    const isSelected = selectedSpan?.spanId === s.spanId;
-                    const isBottleneck = highlightBottleneck && s.spanId === bottleneckSpanId;
-                    return (
-                      <div
-                        key={`mini-${s.spanId}`}
-                        onClick={() => setSelectedSpan(s)}
-                        className={`w-2.5 h-2.5 rounded-full cursor-pointer transition-all ${
-                          isSelected
-                            ? 'bg-cyan-400 ring-2 ring-cyan-300 scale-125'
-                            : isBottleneck
-                            ? 'bg-amber-400 ring-1 ring-amber-300'
-                            : s.status === 'ERROR'
-                            ? 'bg-rose-500'
-                            : 'bg-slate-600 hover:bg-slate-400'
-                        }`}
-                        title={s.name}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Node Detail Drawer / Inspection Panel */}
-        {selectedSpan && mode !== 'json' && (
-          <aside className="w-[420px] h-full bg-[#0a0d1a]/95 border-l border-white/[0.1] backdrop-blur-2xl z-20 flex flex-col shadow-2xl overflow-y-auto">
-            {/* Drawer Header */}
-            <div className="sticky top-0 bg-[#0c1020]/95 backdrop-blur-md p-4 border-b border-white/10 flex items-center justify-between z-10">
-              <div className="flex items-center gap-2">
-                <span
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    selectedSpan.status === 'OK' ? 'bg-emerald-400' : 'bg-rose-400 animate-pulse'
-                  }`}
-                />
-                <h3 className="text-sm font-bold text-white tracking-tight truncate max-w-[280px]">
-                  {selectedSpan.name}
-                </h3>
-              </div>
-              <button
-                onClick={() => setSelectedSpan(null)}
-                className="w-7 h-7 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-400 hover:text-white flex items-center justify-center text-sm"
+            {/* =============================================================
+                RIGHT PANEL: SEGREGATED INSPECT DETAILS DRAWER (Matching Image 2)
+                ============================================================= */}
+            {isInspectorOpen && activeSpan && (
+              <aside
+                style={{
+                  width: '460px',
+                  minWidth: '360px',
+                  maxWidth: '45vw',
+                  height: '100%',
+                  flexShrink: 0,
+                }}
+                className="h-full bg-white border-l border-[#CBD5E1] flex flex-col shrink-0 overflow-hidden shadow-card z-20"
               >
-                ✕
-              </button>
-            </div>
+                {/* Header (Matching Image 2) */}
+                <div className="p-4 border-b border-[#CBD5E1] bg-[#F8FAFC] space-y-2 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase border ${
+                          activeSpan.category === 'CONTROLLER'
+                            ? 'bg-blue-50 text-blue-700 border-blue-200'
+                            : activeSpan.category === 'SERVICE'
+                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                            : activeSpan.category === 'REPOSITORY'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-slate-100 text-slate-700 border-slate-300'
+                        }`}
+                      >
+                        {activeSpan.category || 'SPAN'}
+                      </span>
 
-            <div className="p-4 space-y-4">
-              {/* Highlight if Bottleneck */}
-              {highlightBottleneck && selectedSpan.spanId === bottleneckSpanId && (
-                <div className="flex items-center gap-2.5 p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs">
-                  <span className="text-base">🔥</span>
-                  <div>
-                    <span className="font-bold">Execution Bottleneck:</span> This span consumed{' '}
-                    <span className="font-mono font-bold text-amber-200">{selectedSpan.durationMs.toFixed(2)} ms</span> (
-                    {((selectedSpan.durationMs / trace.durationMs) * 100).toFixed(1)}% of total trace time).
-                  </div>
-                </div>
-              )}
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
+                          activeSpan.status === 'OK'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                            : 'bg-rose-50 text-rose-700 border-rose-300'
+                        }`}
+                      >
+                        {activeSpan.status === 'OK' ? 'SUCCESS' : 'ERROR'}
+                      </span>
 
-              {/* Error Alert Card (Displaying error, errorMessage, errorDetail) */}
-              {selectedSpan.status === 'ERROR' && (
-                <div className="rounded-xl bg-rose-500/10 border border-rose-500/30 p-3.5 space-y-2">
-                  <div className="flex items-center gap-2 text-rose-400 font-bold text-xs uppercase tracking-wider">
-                    <span>⚠️ Execution Error</span>
-                  </div>
-
-                  {selectedSpan.error && (
-                    <div className="text-xs text-rose-200 font-mono bg-rose-950/40 p-2 rounded-lg border border-rose-500/20 break-words">
-                      {selectedSpan.error}
+                      <span className="text-xs font-mono font-bold text-[#2563EB]">
+                        ⏱ {activeSpan.durationMs.toFixed(2)} ms
+                      </span>
                     </div>
-                  )}
 
-                  {selectedSpan.errorMessage && (
-                    <div>
-                      <span className="text-[11px] font-semibold text-slate-400 block mb-1">Error Message:</span>
-                      <div className="text-xs text-rose-300 font-medium bg-black/30 p-2 rounded-lg">
-                        {selectedSpan.errorMessage}
-                      </div>
-                    </div>
-                  )}
+                    {/* Close button ✕ */}
+                    <button
+                      onClick={() => setIsInspectorOpen(false)}
+                      className="p-1 rounded-lg text-[#64748B] hover:text-[#263238] hover:bg-[#E2E8F0] transition-colors cursor-pointer"
+                      title="Close Inspector"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </div>
 
-                  {selectedSpan.errorDetail && (
-                    <div>
-                      <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400 mb-1">
-                        <span>Stack Trace (errorDetail):</span>
+                  {/* Title */}
+                  <h3 className="text-base font-extrabold text-[#263238] tracking-tight break-all">
+                    {activeSpan.name}
+                  </h3>
+
+                  {/* Breadcrumb Path (Matching Image 2) */}
+                  <div className="flex items-center gap-1.5 text-[11px] font-mono text-[#64748B] overflow-x-auto no-scrollbar">
+                    <span className="font-bold text-[#475569] shrink-0">Path:</span>
+                    {spanBreadcrumbs.map((s, idx) => (
+                      <React.Fragment key={s.spanId}>
+                        {idx > 0 && <span className="text-slate-400 shrink-0">›</span>}
                         <button
-                          onClick={() => handleCopyStackTrace(selectedSpan.errorDetail!)}
-                          className="text-[10px] text-cyan-400 hover:underline flex items-center gap-1"
+                          onClick={() => {
+                            setSelectedSpan(s);
+                          }}
+                          className={`shrink-0 hover:underline truncate max-w-[130px] cursor-pointer ${
+                            s.spanId === activeSpan.spanId ? 'font-bold text-[#2563EB]' : 'text-[#64748B]'
+                          }`}
+                          title={s.name}
                         >
-                          {copiedStack ? '✓ Copied' : 'Copy Stack'}
+                          {s.name}
                         </button>
-                      </div>
-                      <pre className="text-[10px] font-mono text-slate-300 bg-black/60 p-2.5 rounded-lg border border-white/5 overflow-x-auto max-h-48 leading-relaxed">
-                        {selectedSpan.errorDetail}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Execution Metrics Grid */}
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                  <span className="text-[10px] text-slate-400 block mb-0.5">Duration</span>
-                  <span className="font-mono font-bold text-cyan-400 text-sm">
-                    {selectedSpan.durationMs.toFixed(2)} ms
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                  <span className="text-[10px] text-slate-400 block mb-0.5">Timeline Offset</span>
-                  <span className="font-mono font-bold text-slate-200 text-sm">
-                    +{selectedSpan.offsetMs.toFixed(2)} ms
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                  <span className="text-[10px] text-slate-400 block mb-0.5">Category</span>
-                  <span className="font-semibold text-indigo-300">{selectedSpan.category}</span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                  <span className="text-[10px] text-slate-400 block mb-0.5">Nesting Depth</span>
-                  <span className="font-mono font-bold text-slate-200">Level {selectedSpan.depth}</span>
-                </div>
-              </div>
-
-              {/* Metadata Details */}
-              <div className="space-y-2 text-xs">
-                <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                  <span className="text-[10px] text-slate-400 block mb-1">Target Class</span>
-                  <code className="font-mono text-[11px] text-slate-300 break-all">{selectedSpan.class}</code>
-                </div>
-
-                <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                  <span className="text-[10px] text-slate-400 block mb-1">Target Method</span>
-                  <code className="font-mono text-[11px] text-cyan-300">{selectedSpan.method}()</code>
-                </div>
-
-                <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                  <span className="text-[10px] text-slate-400 block mb-1">Execution Thread</span>
-                  <code className="font-mono text-[11px] text-slate-300">{selectedSpan.thread}</code>
-                </div>
-              </div>
-
-              {/* Input Arguments (with Masking) */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                  <span>Input Arguments (inputArgs)</span>
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    {selectedSpan.inputArgs?.length || 0} args
-                  </span>
-                </div>
-                {selectedSpan.inputArgs && selectedSpan.inputArgs.length > 0 ? (
-                  <div className="space-y-2">
-                    {selectedSpan.inputArgs.map((arg, idx) => (
-                      <div key={idx} className="p-2 rounded-lg bg-black/40 border border-white/[0.06] text-xs">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-mono text-cyan-300 font-medium">{arg.name}</span>
-                          {arg.sensitive && (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-semibold uppercase">
-                              Masked
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-[10px] text-slate-400 font-mono block mb-1">{arg.type}</span>
-                        <pre className="text-[11px] font-mono text-slate-200 overflow-x-auto p-1.5 bg-black/30 rounded">
-                          {typeof arg.value === 'object' ? JSON.stringify(arg.value, null, 2) : String(arg.value)}
-                        </pre>
-                      </div>
+                      </React.Fragment>
                     ))}
                   </div>
-                ) : (
-                  <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04] text-xs text-slate-500 italic">
-                    No input arguments captured
-                  </div>
-                )}
-              </div>
-
-              {/* Output Result */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                  <span>Return Result (outputArgs)</span>
                 </div>
-                {selectedSpan.outputArgs ? (
-                  <div className="p-2.5 rounded-lg bg-black/40 border border-white/[0.06] text-xs">
-                    <span className="text-[10px] text-slate-400 font-mono block mb-1">
-                      {selectedSpan.outputArgs.type}
-                    </span>
-                    <pre className="text-[11px] font-mono text-slate-200 overflow-x-auto p-1.5 bg-black/30 rounded">
-                      {typeof selectedSpan.outputArgs.value === 'object'
-                        ? JSON.stringify(selectedSpan.outputArgs.value, null, 2)
-                        : String(selectedSpan.outputArgs.value)}
-                    </pre>
-                  </div>
-                ) : (
-                  <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04] text-xs text-slate-500 italic">
-                    No return value captured
+
+                {/* Tab Navigation: Overview | Input / Output | Attributes | Raw JSON */}
+                <div className="flex items-center gap-1 px-4 py-2 border-b border-[#CBD5E1] bg-white overflow-x-auto no-scrollbar shrink-0">
+                  <button
+                    onClick={() => setInspectorTab('overview')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      inspectorTab === 'overview'
+                        ? 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE]'
+                        : 'text-[#64748B] hover:text-[#263238]'
+                    }`}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    onClick={() => setInspectorTab('io')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      inspectorTab === 'io'
+                        ? 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE]'
+                        : 'text-[#64748B] hover:text-[#263238]'
+                    }`}
+                  >
+                    Input / Output
+                  </button>
+                  <button
+                    onClick={() => setInspectorTab('attributes')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      inspectorTab === 'attributes'
+                        ? 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE]'
+                        : 'text-[#64748B] hover:text-[#263238]'
+                    }`}
+                  >
+                    Attributes
+                  </button>
+                  <button
+                    onClick={() => setInspectorTab('rawJson')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      inspectorTab === 'rawJson'
+                        ? 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE]'
+                        : 'text-[#64748B] hover:text-[#263238]'
+                    }`}
+                  >
+                    Raw JSON
+                  </button>
+                </div>
+
+                {/* ===================== TAB 1: OVERVIEW (Segregated Cards) ===================== */}
+                {inspectorTab === 'overview' && (
+                  <div className="p-4 space-y-3 overflow-y-auto flex-1 bg-[#F8FAFC]">
+                    {/* Grid with 2 columns */}
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* SPAN ID */}
+                      <div className="p-3 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-1">
+                        <span className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
+                          SPAN ID
+                        </span>
+                        <div className="font-mono text-xs font-extrabold text-[#2563EB] break-all select-all">
+                          {activeSpan.spanId}
+                        </div>
+                      </div>
+
+                      {/* DURATION */}
+                      <div className="p-3 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-1">
+                        <span className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
+                          DURATION
+                        </span>
+                        <div className="font-mono text-xs font-extrabold text-emerald-600">
+                          {activeSpan.durationMs.toFixed(2)} ms
+                        </div>
+                      </div>
+
+                      {/* PARENT SPAN */}
+                      <div className="p-3 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-1">
+                        <span className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
+                          PARENT SPAN
+                        </span>
+                        <div className="font-mono text-xs font-bold text-[#334155] break-all">
+                          {activeSpan.parentSpanId || 'root (none)'}
+                        </div>
+                      </div>
+
+                      {/* THREAD */}
+                      <div className="p-3 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-1">
+                        <span className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
+                          THREAD
+                        </span>
+                        <div className="font-mono text-xs font-bold text-[#334155] truncate">
+                          {activeSpan.thread || 'main'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* METHOD EXECUTED (Full width) */}
+                    <div className="p-3.5 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-1.5">
+                      <span className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
+                        METHOD EXECUTED
+                      </span>
+                      <div className="font-mono text-xs font-bold text-[#263238] break-all select-all bg-[#F1F5F9] p-2.5 rounded-lg border border-[#E2E8F0]">
+                        {activeSpan.class ? `${activeSpan.class}.${activeSpan.method}()` : activeSpan.name}
+                      </div>
+                    </div>
+
+                    {/* TIMING BREAKDOWN */}
+                    <div className="p-3.5 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider">
+                          TIMING RELATIVE TO TRACE
+                        </span>
+                        <span className="font-mono text-[11px] font-bold text-[#2563EB]">
+                          +{activeSpan.offsetMs?.toFixed(1) ?? 0} ms from start
+                        </span>
+                      </div>
+                      <div className="w-full h-2 rounded-full bg-[#E2E8F0] overflow-hidden">
+                        <div
+                          style={{ width: `${Math.min(100, Math.max(5, activeSpan.widthPct || 10))}%` }}
+                          className="h-full rounded-full bg-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* ERROR CARD IF ERROR */}
+                    {activeSpan.status === 'ERROR' && (
+                      <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 space-y-1.5 shadow-2xs">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-rose-700 flex items-center gap-1.5">
+                          <span>⚠️</span>
+                          <span>ERROR DETAILS</span>
+                        </span>
+                        <div className="font-mono text-xs font-bold break-all">
+                          {activeSpan.errorMessage || activeSpan.error || 'Execution encountered an unhandled exception'}
+                        </div>
+                        {activeSpan.errorDetail && (
+                          <pre className="font-mono text-[11px] text-rose-600 bg-white/80 p-2 rounded-lg border border-rose-200 overflow-auto max-h-32">
+                            {activeSpan.errorDetail}
+                          </pre>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-            </div>
-          </aside>
+
+                {/* ===================== TAB 2: INPUT / OUTPUT ===================== */}
+                {inspectorTab === 'io' && (
+                  <div className="p-4 space-y-4 overflow-y-auto flex-1 bg-[#F8FAFC]">
+                    {/* Input Arguments */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-[#263238] uppercase tracking-wider flex items-center gap-1.5">
+                          <span>📥</span>
+                          <span>Input Arguments ({activeSpan.inputArgs?.length || 0})</span>
+                        </span>
+                      </div>
+
+                      {activeSpan.inputArgs && activeSpan.inputArgs.length > 0 ? (
+                        <div className="space-y-2">
+                          {activeSpan.inputArgs.map((arg, idx) => (
+                            <div key={idx} className="p-3 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-1.5">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-mono font-bold text-[#2563EB]">{arg.name || `arg[${idx}]`}</span>
+                                <span className="font-mono text-[10px] text-[#64748B] bg-[#F1F5F9] px-2 py-0.5 rounded border border-[#CBD5E1]">
+                                  {arg.type || 'Object'}
+                                </span>
+                              </div>
+                              <pre className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#CBD5E1] text-xs font-mono text-[#1E293B] overflow-auto max-h-40 leading-relaxed select-text">
+                                {typeof arg.value === 'object'
+                                  ? JSON.stringify(arg.value, null, 2)
+                                  : String(arg.value ?? 'null')}
+                              </pre>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="p-4 rounded-xl bg-white border border-[#CBD5E1] text-center text-xs text-[#64748B]">
+                          No input arguments captured for this method.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Output / Return Value */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-[#263238] uppercase tracking-wider flex items-center gap-1.5">
+                          <span>📤</span>
+                          <span>Output / Return Value</span>
+                        </span>
+                      </div>
+
+                      <div className="p-3 rounded-xl bg-white border border-[#CBD5E1] shadow-2xs space-y-1.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-mono font-bold text-emerald-600">return</span>
+                          <span className="font-mono text-[10px] text-[#64748B] bg-[#F1F5F9] px-2 py-0.5 rounded border border-[#CBD5E1]">
+                            {activeSpan.outputArgs?.type || 'void'}
+                          </span>
+                        </div>
+                        <pre className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#CBD5E1] text-xs font-mono text-[#1E293B] overflow-auto max-h-48 leading-relaxed select-text">
+                          {activeSpan.outputArgs?.value !== undefined
+                            ? typeof activeSpan.outputArgs.value === 'object'
+                              ? JSON.stringify(activeSpan.outputArgs.value, null, 2)
+                              : String(activeSpan.outputArgs.value)
+                            : 'void / executed without return payload'}
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ===================== TAB 3: ATTRIBUTES (Segregated Table) ===================== */}
+                {inspectorTab === 'attributes' && (
+                  <div className="p-4 overflow-y-auto flex-1 bg-[#F8FAFC]">
+                    <div className="rounded-xl bg-white border border-[#CBD5E1] shadow-2xs overflow-hidden">
+                      <table className="w-full text-left text-xs font-mono">
+                        <thead className="bg-[#F1F5F9] text-[#475569] uppercase text-[10px] border-b border-[#CBD5E1]">
+                          <tr>
+                            <th className="py-2.5 px-3.5 font-bold">Attribute Key</th>
+                            <th className="py-2.5 px-3.5 font-bold">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E2E8F0]">
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">spanId</td>
+                            <td className="py-2 px-3.5 text-[#2563EB] select-all font-bold">{activeSpan.spanId}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">traceId</td>
+                            <td className="py-2 px-3.5 text-[#334155] select-all">{activeSpan.traceId}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">parentSpanId</td>
+                            <td className="py-2 px-3.5 text-[#334155]">{activeSpan.parentSpanId || 'root'}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">category</td>
+                            <td className="py-2 px-3.5 text-[#334155]">{activeSpan.category}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">depth</td>
+                            <td className="py-2 px-3.5 text-[#334155]">{activeSpan.depth}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">durationMs</td>
+                            <td className="py-2 px-3.5 text-emerald-600 font-bold">{activeSpan.durationMs.toFixed(3)} ms</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">offsetMs</td>
+                            <td className="py-2 px-3.5 text-[#334155]">+{activeSpan.offsetMs?.toFixed(3) ?? 0} ms</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">thread</td>
+                            <td className="py-2 px-3.5 text-[#334155]">{activeSpan.thread || 'main'}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">status</td>
+                            <td className="py-2 px-3.5">
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                                activeSpan.status === 'OK' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+                              }`}>
+                                {activeSpan.status}
+                              </span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">class</td>
+                            <td className="py-2 px-3.5 text-[#334155] break-all">{activeSpan.class || 'N/A'}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">method</td>
+                            <td className="py-2 px-3.5 text-[#334155] break-all">{activeSpan.method || 'N/A'}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3.5 text-[#64748B] font-bold">startTime</td>
+                            <td className="py-2 px-3.5 text-[#334155]">{activeSpan.startTime || 'N/A'}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* ===================== TAB 4: RAW JSON ===================== */}
+                {inspectorTab === 'rawJson' && (
+                  <div className="p-3 overflow-hidden flex-1 bg-[#F1F3F5]">
+                    <CodeViewer
+                      jsonString={JSON.stringify(activeSpan, null, 2)}
+                      title={`Span: ${activeSpan.name}`}
+                      badge={`${activeSpan.category}`}
+                    />
+                  </div>
+                )}
+              </aside>
+            )}
+          </div>
         )}
       </div>
     </div>
   );
 };
+
+export default GraphView;

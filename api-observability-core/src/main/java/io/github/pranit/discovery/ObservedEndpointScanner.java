@@ -115,25 +115,25 @@ public class ObservedEndpointScanner {
                             if (description == null) {
                                 description = beanType.getSimpleName() + "." + method.getName();
                             }
-                            String requestBodyType = null;
-                            String sampleBody = null;
-                            Map<String, String> sampleHeaders = new LinkedHashMap<>();
+                            String requestType = null;
+                            String body = null;
+                            Map<String, String> headers = new LinkedHashMap<>();
                             if ("POST".equalsIgnoreCase(httpMethod)
                                     || "PUT".equalsIgnoreCase(httpMethod)
                                     || "PATCH".equalsIgnoreCase(httpMethod)) {
-                                sampleHeaders.put("Content-Type", "application/json");
+                                headers.put("Content-Type", "application/json");
                                 for (Parameter param : method.getParameters()) {
                                     if (param.isAnnotationPresent(RequestBody.class)) {
                                         Class<?> bodyType = param.getType();
-                                        requestBodyType = bodyType.getName();
-                                        sampleBody = generateSampleJson(bodyType);
+                                        requestType = bodyType.getName();
+                                        body = generateSampleJson(bodyType);
                                         break;
                                     }
                                 }
                             }
                             list.add(new ObservedEndpoint(
                                     id, httpMethod, path, beanType.getSimpleName(),
-                                    method.getName(), description, requestBodyType, sampleBody, sampleHeaders)
+                                    method.getName(), description, requestType, body, headers)
                             );
                         }
                     }

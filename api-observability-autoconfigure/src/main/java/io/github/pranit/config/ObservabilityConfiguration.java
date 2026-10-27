@@ -26,12 +26,11 @@ import org.springframework.context.annotation.ConditionContext;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
-import org.springframework.core.env.Environment;
-import org.springframework.core.env.Profiles;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -54,6 +53,42 @@ public class ObservabilityConfiguration {
     private static final Logger LOG = LoggerFactory.getLogger(ObservabilityConfiguration.class);
 
     @Bean
+    @ConditionalOnMissingBean
+    public ServiceProperties.ObserveSettings observeSettings(ServiceProperties service) {
+        return (service != null && service.observing() != null)
+                ? service.observing()
+                : new ServiceProperties.ObserveSettings(new ServiceProperties.ObserveConfig(
+                true, "/obs", "API Observability", 500));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ServiceProperties.ObserveConfig observeConfig(ServiceProperties.ObserveSettings observeSettings) {
+        return (observeSettings != null && observeSettings.observe() != null)
+                ? observeSettings.observe()
+                : new ServiceProperties.ObserveConfig(
+                true, "/obs", "API Observability", 500);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ServiceProperties.ObserveSecuritySettings observeSecuritySettings(ServiceProperties service) {
+        return (service != null && service.observe() != null)
+                ? service.observe()
+                : new ServiceProperties.ObserveSecuritySettings(
+                "ADMIN,DEVELOPER", "admin", "admin");
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ServiceProperties.TraceSettings traceSettings(ServiceProperties service) {
+        return (service != null && service.tracing() != null)
+                ? service.tracing()
+                : new ServiceProperties.TraceSettings(
+                true, "", "trace", 14, true, List.of());
+    }
+
+    @Bean
     @ConditionalOnMissingBean(ObserveStore.class)
     @ConditionalOnProperty(
             prefix = "service.clickhouse",
@@ -61,8 +96,9 @@ public class ObservabilityConfiguration {
             havingValue = "false",
             matchIfMissing = true
     )
-    public ObserveStore observeStore(ServiceProperties.ObserveConfig properties) {
-        int maxTraces = (properties != null) ? properties.maxTraces() : 500;
+    public ObserveStore observeStore(ServiceProperties service) {
+        var observeConfig = (service != null && service.observing() != null) ? service.observing().observe() : null;
+        int maxTraces = (observeConfig != null) ? observeConfig.maxTraces() : 500;
         LOG.info("API Observability: using in-memory trace store (maxTraces: {})", maxTraces);
         return InMemoryObserveStore.init(maxTraces);
     }
@@ -75,11 +111,15 @@ public class ObservabilityConfiguration {
             havingValue = "true",
             matchIfMissing = true
     )
-    public TraceFileWriter traceFileWriter(ServiceProperties.TraceSettings properties) {
-        String dir = properties.directory();
-        String prefix = properties.filePrefix();
-        boolean async = properties.async();
-        int retention = properties.retentionDays();
+    public TraceFileWriter traceFileWriter(ServiceProperties service) {
+        var tracing = (service != null && service.tracing() != null)
+                ? service.tracing()
+                : new ServiceProperties.TraceSettings(
+                true, "", "trace", 14, true, List.of());
+        String dir = tracing.directory();
+        String prefix = tracing.filePrefix();
+        boolean async = tracing.async();
+        int retention = tracing.retentionDays();
         return new TraceFileWriter(dir, prefix, async, retention);
     }
 
@@ -88,9 +128,10 @@ public class ObservabilityConfiguration {
     public TracingAspect tracingAspect(
             ObjectProvider<ObserveStore> observeStoreProvider,
             ObjectProvider<TraceFileWriter> traceFileWriterProvider,
-            ServiceProperties.TraceSettings properties
+            ServiceProperties service
     ) {
-        List<String> maskKeys = (properties != null) ? properties.maskKeys() : List.of();
+        var tracing = (service != null) ? service.tracing() : null;
+        List<String> maskKeys = (tracing != null) ? tracing.maskKeys() : List.of();
         return new TracingAspect(observeStoreProvider.getIfAvailable(), traceFileWriterProvider.getIfAvailable(), maskKeys);
     }
 
@@ -103,10 +144,10 @@ public class ObservabilityConfiguration {
     )
     @ConditionalOnMissingBean
     public AuthController authController(ServiceProperties service) {
-        var observe = (service.observing() != null) ? service.observing().observe() : null;
+        var observe = (service != null && service.observing() != null) ? service.observing().observe() : null;
         String title = (observe != null) ? observe.title() : "API Observability";
-        String endpoint = (service.observing() != null) ? service.observing().getPath() : "/obs";
-        String role = (service.observe() != null && service.observe().role() != null)
+        String endpoint = (service != null && service.observing() != null) ? service.observing().getPath() : "/obs";
+        String role = (service != null && service.observe() != null && service.observe().role() != null)
                 ? service.observe().role() : "ADMIN,DEVELOPER";
         return new AuthController(title, endpoint, role);
     }
@@ -120,21 +161,9 @@ public class ObservabilityConfiguration {
     )
     @Conditional(OnUiResourceCondition.class)
     @ConditionalOnMissingBean
-    public ObservabilityWebMvcConfigurer observabilityWebMvcConfigurer(ServiceProperties.ObserveSettings properties) {
-        return new ObservabilityWebMvcConfigurer(properties);
-    }
-
-    /**
-     * Condition matching when the UI static bundle (from api-observability-ui) is present on classpath.
-     * When api-observability-ui is excluded, this condition evaluates to false, enabling zero-footprint Headless Mode.
-     */
-    static class OnUiResourceCondition implements Condition {
-        @Override
-        public boolean matches(ConditionContext context, @NonNull AnnotatedTypeMetadata metadata) {
-            var loader = context.getResourceLoader();
-            return loader.getResource("classpath:/static/obs/index.html").exists()
-                    || loader.getResource("classpath:/META-INF/resources/obs/index.html").exists();
-        }
+    public ObservabilityWebMvcConfigurer observabilityWebMvcConfigurer(ServiceProperties service) {
+        var observeSettings = (service != null) ? service.observing() : null;
+        return new ObservabilityWebMvcConfigurer(observeSettings);
     }
 
     @Bean
@@ -146,20 +175,22 @@ public class ObservabilityConfiguration {
     )
     @ConditionalOnMissingBean
     public ObservedEndpointScanner observedEndpointScanner
-            (ApplicationContext applicationContext, ServiceProperties.ObserveSettings properties) {
-        return new ObservedEndpointScanner(applicationContext, properties.getPath());
+            (ApplicationContext applicationContext, ServiceProperties service) {
+        String path = (service != null && service.observing() != null) ? service.observing().getPath() : "/obs";
+        return new ObservedEndpointScanner(applicationContext, path);
     }
 
     @Bean
     @ConditionalOnWebApplication
     @ConditionalOnProperty(
-            prefix = "service.observing",
+            prefix = "service.observing.observe",
             name = "enabled",
             havingValue = "true"
     )
     @ConditionalOnMissingBean
-    public ObservabilityStartupListener observabilityStartupListener(ServiceProperties.ObserveSettings properties) {
-        return new ObservabilityStartupListener(properties);
+    public ObservabilityStartupListener observabilityStartupListener(ServiceProperties service) {
+        var observeSettings = (service != null) ? service.observing() : null;
+        return new ObservabilityStartupListener(observeSettings);
     }
 
     @Bean
@@ -186,21 +217,30 @@ public class ObservabilityConfiguration {
     )
     @ConditionalOnMissingBean(name = "observabilitySecurityFilterChain")
     public SecurityFilterChain observabilitySecurityFilterChain(
-            HttpSecurity http, ServiceProperties service, Environment environment) throws Exception {
-        var properties = service.observe();
-        var path = service.observing();
+            HttpSecurity http, ServiceProperties service) throws Exception {
+        var properties = (service != null) ? service.observe() : null;
+        var path = (service != null) ? service.observing() : null;
+        String endpoint = (path != null) ? path.getPath() : "/obs";
         String username = (properties != null
-                && properties.username() != null
-                && !properties.username().isBlank())
+                && properties.username() != null && !properties.username().isBlank())
                 ? properties.username() : "admin";
         String password = (properties != null
-                && properties.password() != null
-                && !properties.password().isBlank())
+                && properties.password() != null && !properties.password().isBlank())
                 ? properties.password() : "admin";
-        String[] roles = (properties != null) ? properties.roles() : new String[]{"ADMIN", "DEVELOPER"};
-        validateCredentials(username, password, environment);
-        SecurityConfiguration security = new SecurityConfiguration(username, password, roles, path.getPath(), null);
+        String[] roles = (properties != null && properties.roles().length > 0)
+                ? properties.roles() : new String[]{"ADMIN", "DEVELOPER"};
+        validateCredentials(username, password);
+        SecurityConfiguration security = new SecurityConfiguration(username, password, roles, endpoint, null);
         return security.buildFilterChain(http);
+    }
+
+    private void validateCredentials(String username, String password) {
+        boolean isDefault = "admin".equalsIgnoreCase(username) && "admin".equalsIgnoreCase(password);
+        if (isDefault) {
+            LOG.warn("""
+                    API Observability is configured with default credentials ('admin'/'admin').
+                    """);
+        }
     }
 
     @Bean
@@ -214,37 +254,31 @@ public class ObservabilityConfiguration {
             matchIfMissing = true
     )
     @ConditionalOnMissingBean(SecurityFilterChain.class)
-    public SecurityFilterChain noObserveSecurityFilterChain
-            (HttpSecurity http, ServiceProperties.ObserveSettings properties) {
-        String path = properties.getPath();
+    public SecurityFilterChain noObserveSecurityFilterChain(HttpSecurity http, ServiceProperties service) {
+        String path = (service != null && service.observing() != null)
+                ? service.observing().getPath() : "/obs";
         http.securityMatcher(path, path + "/**")
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
-                .csrf(org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer::disable);
+                .csrf(AbstractHttpConfigurer::disable);
         return http.build();
     }
 
     @Bean
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
     @ConditionalOnClass(UserDetailsService.class)
-    @ConditionalOnProperty(
-            prefix = "service.observe",
-            name = "enabled",
-            havingValue = "true"
-    )
     @ConditionalOnMissingBean({UserDetailsService.class, AuthenticationManager.class, AuthenticationProvider.class})
-    public UserDetailsService userDetailsService
-            (ServiceProperties.ObserveSecuritySettings properties, Environment environment) {
+    public UserDetailsService userDetailsService(ServiceProperties service, ObjectProvider<PasswordEncoder> encoders) {
+        var properties = (service != null) ? service.observe() : null;
         String username = (properties != null
-                && properties.username() != null
-                && !properties.username().isBlank())
+                && properties.username() != null && !properties.username().isBlank())
                 ? properties.username() : "admin";
         String password = (properties != null
-                && properties.password() != null
-                && !properties.password().isBlank())
+                && properties.password() != null && !properties.password().isBlank())
                 ? properties.password() : "admin";
-        validateCredentials(username, password, environment);
-        var encoder = new BCryptPasswordEncoder();
-        String[] roles = (properties != null) ? properties.roles() : new String[]{"ADMIN", "DEVELOPER"};
+        validateCredentials(username, password);
+        String[] roles = (properties != null && properties.roles().length > 0)
+                ? properties.roles() : new String[]{"ADMIN", "DEVELOPER"};
+        PasswordEncoder encoder = encoders.getIfAvailable(BCryptPasswordEncoder::new);
         var user = User.withUsername(username)
                 .password(encoder.encode(password))
                 .roles(roles)
@@ -254,37 +288,21 @@ public class ObservabilityConfiguration {
 
     @Bean
     @ConditionalOnClass(PasswordEncoder.class)
-    @ConditionalOnProperty(
-            prefix = "service.observe",
-            name = "enabled",
-            havingValue = "true"
-    )
     @ConditionalOnMissingBean(PasswordEncoder.class)
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
-    private void validateCredentials(String username, String password, Environment environment) {
-        boolean isDefault = "admin".equalsIgnoreCase(username) && "admin".equalsIgnoreCase(password);
-        if (isDefault) {
-            boolean isProd = environment != null && environment.acceptsProfiles(
-                    Profiles.of("prod", "production", "live", "stage", "staging")
-            );
-            if (isProd) {
-                LOG.warn("""
-                        API Observability Security Warning: Insecure default credentials ('admin'/'admin')
-                        are being used under a production/staging profile!
-                        Please configure 'service.observing.observe.username' and
-                        'service.observing.observe.password' via environment variables
-                        or secure configuration.
-                        """);
-            } else {
-                LOG.warn("""
-                        API Observability is configured with default credentials ('admin'/'admin').
-                        For production deployments, configure custom credentials via
-                        'service.observing.observe.username' and 'service.observing.observe.password'.
-                        """);
-            }
+    /**
+     * Condition matching when the UI static bundle (from api-observability-ui) is present on classpath.
+     * When api-observability-ui is excluded, this condition evaluates to false, enabling zero-footprint Headless Mode.
+     */
+    static class OnUiResourceCondition implements Condition {
+        @Override
+        public boolean matches(ConditionContext context, @NonNull AnnotatedTypeMetadata metadata) {
+            var loader = context.getResourceLoader();
+            return loader.getResource("classpath:/static/obs/index.html").exists()
+                    || loader.getResource("classpath:/META-INF/resources/obs/index.html").exists();
         }
     }
 }

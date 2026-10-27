@@ -12,8 +12,8 @@ public record ObservedEndpoint(
         String controllerName,
         String methodName,
         String description,
-        String requestBodyType,
-        String sampleBody,
-        Map<String, String> sampleHeaders
+        String requestType,
+        String body,
+        Map<String, String> headers
 ) {
 }

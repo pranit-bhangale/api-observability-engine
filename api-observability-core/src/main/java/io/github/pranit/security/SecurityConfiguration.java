@@ -93,9 +93,7 @@ public class SecurityConfiguration {
         Set<String> authorizedRolesSet = new LinkedHashSet<>();
         authorizedRolesSet.add("ADMIN");
         authorizedRolesSet.add("DEVELOPER");
-        for (String r : roles) {
-            authorizedRolesSet.add(r);
-        }
+        authorizedRolesSet.addAll(Arrays.asList(roles));
         String[] authorizedRoles = authorizedRolesSet.toArray(new String[0]);
 
         http.securityMatcher(endpoint, endpoint + "/**")

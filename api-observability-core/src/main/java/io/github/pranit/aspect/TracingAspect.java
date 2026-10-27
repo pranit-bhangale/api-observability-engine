@@ -98,7 +98,8 @@ public class TracingAspect {
             + "&& !within(io.github.pranit.writer..*) "
             + "&& !within(io.github.pranit.security..*) "
             + "&& !within(io.github.pranit.config..*) "
-            + "&& !within(io.github.pranit.controller..*) "
+            + "&& !within(io.github.pranit.controller.AuthController) "
+            + "&& !within(io.github.pranit.controller.ObserveApiController) "
             + "&& !within(io.github.pranit.discovery..*)")
     public Object around(ProceedingJoinPoint pjp) throws Throwable {
         MethodSignature sig = (MethodSignature) pjp.getSignature();
@@ -115,7 +116,8 @@ public class TracingAspect {
                 || targetName.startsWith("io.github.pranit.capture.")
                 || targetName.startsWith("io.github.pranit.security.")
                 || targetName.startsWith("io.github.pranit.config.")
-                || targetName.startsWith("io.github.pranit.controller.")
+                || targetName.equals("io.github.pranit.controller.AuthController")
+                || targetName.equals("io.github.pranit.controller.ObserveApiController")
                 || targetName.startsWith("io.github.pranit.discovery.")) {
             return pjp.proceed();
         }

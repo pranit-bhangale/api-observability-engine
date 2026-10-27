@@ -1,4 +1,4 @@
-export type ActionCategory = 'AUTO' | 'CONTROLLER' | 'SERVICE' | 'REPOSITORY' | 'LLM';
+export type ActionCategory = 'AUTO' | 'CONTROLLER' | 'SERVICE' | 'REPOSITORY' | 'LLM' | 'DATABASE';
 
 export interface ArgumentDetail {
   name: string;
@@ -65,9 +65,9 @@ export interface ObservedEndpoint {
   controllerName: string;
   methodName: string;
   description: string;
-  requestBodyType: string | null;
-  sampleBody: string | null;
-  sampleHeaders: Record<string, string>;
+  requestType: string | null;
+  body: string | null;
+  headers: Record<string, string>;
 }
 
 export interface SessionInfo {
@@ -81,6 +81,6 @@ export interface SessionInfo {
   sessionId?: string;
 }
 
-export type ViewTab = 'dashboard' | 'trace' | 'endpoint' | 'jsonUpload';
+export type ViewTab = 'dashboard' | 'trace' | 'analytics' | 'endpoint' | 'jsonUpload';
 export type GraphLayout = 'horizontal' | 'vertical';
 export type GraphMode = 'graph' | 'node-json' | 'json';

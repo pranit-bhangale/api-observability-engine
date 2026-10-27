@@ -37,15 +37,12 @@ public record ServiceProperties(
 
     public record ObserveSecuritySettings(
             @DefaultValue("ADMIN,DEVELOPER") String role,
-            @DefaultValue("") String username,
-            @DefaultValue("") String password
+            @DefaultValue("admin") String username,
+            @DefaultValue("admin") String password
     ) {
         public String normalizedRole() {
-            String r = (role == null || role.isBlank())
-                    ? "ADMIN" : role.trim();
-            if (r.contains(",")) {
-                r = r.split(",")[0].trim();
-            }
+            String r = (role == null || role.isBlank()) ? "ADMIN" : role.trim();
+            if (r.contains(",")) r = r.split(",")[0].trim();
             return r.startsWith("ROLE_") ? r.substring(5) : r;
         }
 

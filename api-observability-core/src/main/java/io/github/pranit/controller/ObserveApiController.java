@@ -4,6 +4,7 @@ import io.github.pranit.discovery.ObservedEndpointScanner;
 import io.github.pranit.model.ObservedEndpoint;
 import io.github.pranit.model.TraceRecord;
 import io.github.pranit.store.ObserveStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,13 +25,20 @@ public class ObserveApiController {
     private final ObserveStore observeStore;
     private final ObservedEndpointScanner endpointScanner;
 
-    public ObserveApiController(ObserveStore observeStore) {
-        this(observeStore, null);
+    public ObserveApiController() {
+        this(null, null);
     }
 
-    public ObserveApiController(ObserveStore observeStore, ObservedEndpointScanner endpointScanner) {
+    @Autowired
+    public ObserveApiController(
+            @Autowired(required = false) ObserveStore observeStore,
+            @Autowired(required = false) ObservedEndpointScanner endpointScanner) {
         this.observeStore = observeStore;
         this.endpointScanner = endpointScanner;
+    }
+
+    public ObserveApiController(ObserveStore observeStore) {
+        this(observeStore, null);
     }
 
     /**
@@ -46,6 +54,7 @@ public class ObserveApiController {
      */
     @GetMapping("/traces")
     public List<Map<String, Object>> getTraces() {
+        if (observeStore == null) return List.of();
         return observeStore.getTraces()
                 .stream()
                 .map(TraceRecord::toMap)
@@ -57,6 +66,7 @@ public class ObserveApiController {
      */
     @GetMapping("/traces/{traceId}")
     public ResponseEntity<Map<String, Object>> getTrace(@PathVariable String traceId) {
+        if (observeStore == null) return ResponseEntity.notFound().build();
         return observeStore.getTrace(traceId)
                 .map(TraceRecord::toMap)
                 .map(ResponseEntity::ok)
@@ -68,7 +78,7 @@ public class ObserveApiController {
      */
     @DeleteMapping("/traces")
     public ResponseEntity<Void> clearTraces() {
-        observeStore.clear();
+        if (observeStore != null) observeStore.clear();
         return ResponseEntity.noContent().build();
     }
 }

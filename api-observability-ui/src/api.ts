@@ -29,6 +29,51 @@ export async function fetchSession(): Promise<SessionInfo> {
   };
 }
 
+export async function login(username: string, password: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const body = new URLSearchParams();
+    body.append('username', username);
+    body.append('password', password);
+
+    const res = await fetch(`${BASE_PATH}/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString(),
+      credentials: 'include',
+    });
+
+    if (res.ok || res.status === 204) {
+      return { success: true };
+    }
+
+    let errorMsg = 'Invalid username or password';
+    try {
+      const data = await res.json();
+      if (data && data.error) errorMsg = data.error;
+    } catch {
+      // ignore
+    }
+    return { success: false, error: errorMsg };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { success: false, error: `Connection failed: ${msg}` };
+  }
+}
+
+export async function logout(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_PATH}/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    return res.ok || res.status === 204;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchTraces(): Promise<TraceRecord[]> {
   try {
     const res = await fetch(`${BASE_PATH}/api/traces`, { credentials: 'include' });
