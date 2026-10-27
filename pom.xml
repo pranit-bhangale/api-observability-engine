@@ -14,6 +14,7 @@
     <modules>
         <module>api-observability-starter</module>
         <module>api-observability-core</module>
+        <module>api-observability-autoconfigure</module>
     </modules>
 
     <properties>
