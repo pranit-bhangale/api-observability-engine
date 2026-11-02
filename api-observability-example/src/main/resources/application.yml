@@ -1,0 +1,57 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: todo-deep-call-service
+  security:
+    user:
+      name: admin
+      password: admin
+      roles: ADMIN,DEVELOPER
+  datasource:
+    url: jdbc:h2:mem:tododb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    open-in-view: false
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+# Starter Module Configuration (api-observability-starter)
+service:
+  observing:
+    observe:
+      enabled: true
+      endpoint: /obs
+      title: "Todo Deep Method-Call Observability Engine"
+      maxTraces: 1000
+  observe:
+    role: "ADMIN,DEVELOPER"
+    username: "admin"
+    password: "admin"
+  tracing:
+    enabled: true
+    directory: "./traces"
+    filePrefix: "todo-telemetry"
+    retentionDays: 14
+    async: true
+    maskKeys:
+      - password
+      - secret
+      - token
+      - apiKey
+      - authorization
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
